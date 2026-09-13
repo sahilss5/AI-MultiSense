@@ -1,0 +1,12 @@
+[tool.pyright]
+include = ["backend", "ai", "tests"]
+executionEnvironments = [
+  { root = "." }
+]
+extraPaths = ["."]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

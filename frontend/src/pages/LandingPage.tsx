@@ -107,12 +107,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
   };
 
   const cardVariants: Variants = {
-    hidden: { opacity: 0, y: 16, scale: 0.98 },
+    hidden: { opacity: 0, y: 12 },
     visible: {
       opacity: 1,
       y: 0,
-      scale: 1,
-      transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] },
+      transition: { duration: 0.35, ease: 'easeOut' },
     },
   };
 
@@ -350,17 +349,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
         variants={containerVariants}
         initial="hidden"
         whileInView="visible"
-        viewport={{ once: true, margin: '-80px' }}
-        className="py-24 bg-[#0B0F16] border-y border-white/[0.07] relative"
+        viewport={{ once: true, margin: '-60px' }}
+        className="py-16 lg:py-20 bg-[#0B0F16] border-y border-white/[0.07] relative"
       >
-        <div className="max-w-7xl mx-auto px-6 space-y-12">
-          <div className="text-center space-y-3 max-w-2xl mx-auto">
+        <div className="max-w-7xl mx-auto px-6 space-y-10">
+          <div className="text-center space-y-2.5 max-w-2xl mx-auto">
             <div className="inline-flex items-center space-x-2 text-[#63D8E6] text-xs font-sans bg-[#63D8E6]/10 px-3 py-1 rounded-full border border-[#63D8E6]/20 font-medium">
               <Eye className="w-3.5 h-3.5" />
               <span>LIVE TELEMETRY</span>
             </div>
-            <h2 className="text-3xl font-bold font-sans text-[#F5F7FA]">REAL-TIME TELEMETRY PREVIEW</h2>
-            <p className="text-[#8D98AA] text-sm font-sans">
+            <h2 className="text-3xl font-bold font-sans tracking-tight text-[#F5F7FA]">REAL-TIME TELEMETRY PREVIEW</h2>
+            <p className="text-[#8D98AA] text-sm font-sans leading-relaxed">
               Continuous multi-target tracking and threat evaluation computed across live frame buffers.
             </p>
           </div>
@@ -376,7 +375,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
               <motion.div
                 key={metric.label}
                 variants={cardVariants}
-                className="p-6 rounded-2xl bg-[#05070B] border border-white/[0.07] shadow-lg transition-all duration-250 hover:bg-[#101621] hover:border-[#63D8E6]/25 hover:-translate-y-1 space-y-2 group"
+                className="p-5.5 rounded-2xl bg-[#05070B] border border-white/[0.07] shadow-lg transition-all duration-200 ease-out hover:bg-[#0E141E] hover:border-[#63D8E6]/30 hover:-translate-y-0.5 space-y-2 group"
               >
                 <div className="text-[#8D98AA] text-[11px] font-mono flex items-center justify-between">
                   <span>{metric.label}</span>
@@ -398,22 +397,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
         variants={containerVariants}
         initial="hidden"
         whileInView="visible"
-        viewport={{ once: true, margin: '-80px' }}
-        className="py-28 bg-[#05070B]"
+        viewport={{ once: true, margin: '-60px' }}
+        className="py-18 lg:py-22 bg-[#05070B]"
       >
-        <div className="max-w-7xl mx-auto px-6 space-y-16">
-          <div className="text-center space-y-3 max-w-2xl mx-auto">
+        <div className="max-w-7xl mx-auto px-6 space-y-10 lg:space-y-12">
+          <div className="text-center space-y-2.5 max-w-2xl mx-auto">
             <div className="inline-flex items-center space-x-2 text-[#8C9BFF] text-xs font-sans bg-[#8C9BFF]/10 px-3 py-1 rounded-full border border-[#8C9BFF]/20 font-medium">
               <Zap className="w-3.5 h-3.5" />
               <span>CORE CAPABILITIES</span>
             </div>
-            <h2 className="text-3xl lg:text-4xl font-bold font-sans text-[#F5F7FA]">ENGINEERED FOR THERMAL ACCURACY</h2>
-            <p className="text-[#8D98AA] text-sm font-sans">
+            <h2 className="text-3xl lg:text-4xl font-bold font-sans tracking-tight text-[#F5F7FA]">ENGINEERED FOR THERMAL ACCURACY</h2>
+            <p className="text-[#8D98AA] text-sm font-sans leading-relaxed">
               High-precision threat evaluation and uninterrupted multi-target tracking loops.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5 items-stretch">
             {[
               {
                 num: '01',
@@ -447,31 +446,33 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
               <motion.div
                 key={card.num}
                 variants={cardVariants}
-                className={`p-7 rounded-2xl border transition-all duration-250 hover:-translate-y-1 space-y-5 flex flex-col justify-between ${
+                className={`h-full flex flex-col justify-between p-6 rounded-2xl border transition-all duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,0,0,0.35)] ${
                   card.isFeatured
-                    ? 'bg-gradient-to-b from-[#0B0F16] to-[#101621] border-[#8C9BFF]/40 shadow-xl relative overflow-hidden'
-                    : 'bg-[#0B0F16] border-white/[0.07] hover:bg-[#101621] hover:border-white/15 shadow-lg'
+                    ? 'bg-gradient-to-b from-[#0B0F16] via-[#0D131F] to-[#101726] border-[#8C9BFF]/35 hover:border-[#8C9BFF]/55 relative overflow-hidden'
+                    : 'bg-[#0B0F16] border-white/[0.07] hover:bg-[#0E141E] hover:border-white/20 shadow-lg'
                 }`}
               >
                 {card.isFeatured && (
-                  <div className="absolute top-0 right-0 px-3 py-1 bg-[#8C9BFF]/15 border-l border-b border-[#8C9BFF]/30 text-[10px] font-mono font-medium text-[#8C9BFF] rounded-bl-xl">
+                  <div className="absolute top-0 right-0 px-2.5 py-0.5 bg-[#8C9BFF]/15 border-l border-b border-[#8C9BFF]/25 text-[10px] font-mono font-medium text-[#8C9BFF] rounded-bl-lg">
                     FEATURED ENGINE
                   </div>
                 )}
 
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-[#5E697A]">{card.num}</span>
-                  <div className="p-2.5 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+                  <span className="text-xs font-mono text-[#5E697A] font-medium">{card.num}</span>
+                  <div className="w-10 h-10 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center shrink-0">
                     {card.icon}
                   </div>
                 </div>
 
-                <div>
+                <div className="mt-4">
                   <h3 className="text-sm font-semibold font-mono tracking-tight text-[#F5F7FA]">{card.title}</h3>
+                  <p className="text-xs text-[#8D98AA] font-sans leading-relaxed mt-2">{card.desc}</p>
                 </div>
 
-                <div>
-                  <p className="text-xs text-[#8D98AA] font-sans leading-relaxed">{card.desc}</p>
+                <div className="pt-3 border-t border-white/[0.04] flex items-center justify-between text-[11px] font-mono text-[#5E697A]">
+                  <span>LATENCY</span>
+                  <span className="text-[#68D7A5]">REAL-TIME</span>
                 </div>
               </motion.div>
             ))}
@@ -479,23 +480,23 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
         </div>
       </motion.section>
 
-      {/* SYSTEM ARCHITECTURE PIPELINE WITH ANIMATED DATA FLOW */}
+      {/* SYSTEM ARCHITECTURE PIPELINE WITH DATA FLOW */}
       <motion.section
         id="pipeline"
         variants={containerVariants}
         initial="hidden"
         whileInView="visible"
-        viewport={{ once: true, margin: '-80px' }}
-        className="py-28 bg-[#0B0F16] border-y border-white/[0.07] relative"
+        viewport={{ once: true, margin: '-60px' }}
+        className="py-18 lg:py-22 bg-[#0B0F16] border-y border-white/[0.07] relative"
       >
-        <div className="max-w-7xl mx-auto px-6 space-y-16">
-          <div className="text-center space-y-3 max-w-2xl mx-auto">
+        <div className="max-w-7xl mx-auto px-6 space-y-10 lg:space-y-12">
+          <div className="text-center space-y-2.5 max-w-2xl mx-auto">
             <div className="inline-flex items-center space-x-2 text-[#8C9BFF] text-xs font-sans bg-[#8C9BFF]/10 px-3 py-1 rounded-full border border-[#8C9BFF]/20 font-medium">
               <Layers className="w-3.5 h-3.5" />
               <span>SYSTEM ARCHITECTURE</span>
             </div>
-            <h2 className="text-3xl lg:text-4xl font-bold font-sans text-[#F5F7FA]">INTELLIGENT PROCESSING PIPELINE</h2>
-            <p className="text-[#8D98AA] text-sm font-sans">
+            <h2 className="text-3xl lg:text-4xl font-bold font-sans tracking-tight text-[#F5F7FA]">INTELLIGENT PROCESSING PIPELINE</h2>
+            <p className="text-[#8D98AA] text-sm font-sans leading-relaxed max-w-2xl mx-auto">
               End-to-end data pipeline: Sensor → Normalization → Deep Learning → Tracking → Threat Engine → Database → Command Center
             </p>
           </div>
@@ -503,9 +504,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
           {/* Connected Pipeline Steps with Traveling Data Packet */}
           <div className="relative">
             {/* Desktop Horizontal Line */}
-            <div className="hidden xl:block absolute top-1/2 left-6 right-6 h-[1.5px] bg-white/[0.08] -translate-y-1/2 z-0">
+            <div className="hidden xl:block absolute top-1/2 left-6 right-6 h-[1px] bg-white/[0.08] -translate-y-1/2 z-0">
               <motion.div
-                className="h-full bg-[#63D8E6] shadow-[0_0_12px_#63D8E6]"
+                className="h-full bg-[#63D8E6]/60 shadow-[0_0_8px_rgba(99,216,230,0.4)]"
                 style={{
                   width: '14%',
                   marginLeft: `${(activePipelineStep * 14.28)}%`,
@@ -516,12 +517,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
 
             <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-7 gap-3 relative z-10">
               {[
-                { num: '01', title: 'THERMAL SENSOR', sub: 'FLIR AX65 Feed', icon: <Camera className="w-4 h-4 text-[#63D8E6]" /> },
+                { num: '01', title: 'THERMAL SENSOR', sub: 'Integration Option', icon: <Camera className="w-4 h-4 text-[#63D8E6]" /> },
                 { num: '02', title: 'FRAME PROCESSING', sub: 'Normalization', icon: <SlidersHorizontal className="w-4 h-4 text-[#63D8E6]" /> },
                 { num: '03', title: 'YOLO MODEL', sub: 'Inference Loop', icon: <Cpu className="w-4 h-4 text-[#8C9BFF]" /> },
                 { num: '04', title: 'BYTE TRACK', sub: 'IoU Association', icon: <Crosshair className="w-4 h-4 text-[#8C9BFF]" /> },
                 { num: '05', title: 'THREAT ENGINE', sub: 'Rule Evaluation', icon: <ShieldAlert className="w-4 h-4 text-[#E97D87]" /> },
-                { num: '06', title: 'TELEMETRY DB', sub: 'SQLite Log', icon: <Database className="w-4 h-4 text-[#E6B866]" /> },
+                { num: '06', title: 'TELEMETRY DB', sub: 'Persistence Layer', icon: <Database className="w-4 h-4 text-[#E6B866]" /> },
                 { num: '07', title: 'COMMAND CENTER', sub: 'WebSocket HUD', icon: <BellRing className="w-4 h-4 text-[#68D7A5]" /> },
               ].map((step, idx) => {
                 const isActive = activePipelineStep === idx;
@@ -529,9 +530,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
                   <motion.div
                     key={step.num}
                     variants={cardVariants}
-                    className={`p-4.5 rounded-2xl border transition-all duration-250 space-y-3 text-left ${
+                    className={`p-4 rounded-2xl border transition-all duration-200 ease-out space-y-3 text-left ${
                       isActive
-                        ? 'bg-[#101621] border-[#63D8E6]/50 shadow-lg shadow-[#63D8E6]/10 scale-[1.03]'
+                        ? 'bg-[#101724] border-[#63D8E6]/40 shadow-lg shadow-black/40'
                         : 'bg-[#05070B] border-white/[0.07] hover:border-white/15'
                     }`}
                   >
@@ -561,33 +562,33 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
         variants={containerVariants}
         initial="hidden"
         whileInView="visible"
-        viewport={{ once: true, margin: '-80px' }}
-        className="py-24 bg-[#05070B]"
+        viewport={{ once: true, margin: '-60px' }}
+        className="py-16 lg:py-18 bg-[#05070B]"
       >
-        <div className="max-w-7xl mx-auto px-6 space-y-14">
-          <div className="text-center space-y-3 max-w-2xl mx-auto">
+        <div className="max-w-7xl mx-auto px-6 space-y-10">
+          <div className="text-center space-y-2.5 max-w-2xl mx-auto">
             <div className="inline-flex items-center space-x-2 text-[#8C9BFF] text-xs font-sans bg-[#8C9BFF]/10 px-3 py-1 rounded-full border border-[#8C9BFF]/20 font-medium">
               <Code className="w-3.5 h-3.5" />
               <span>TECHNOLOGY SPECIFICATIONS</span>
             </div>
-            <h2 className="text-3xl font-bold font-sans text-[#F5F7FA]">BUILT WITH PROVEN ENGINEERING</h2>
+            <h2 className="text-3xl font-bold font-sans tracking-tight text-[#F5F7FA]">BUILT WITH PROVEN ENGINEERING</h2>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {[
-              { title: 'FastAPI backend', purpose: 'Python async high-concurrency API server with WebSocket support', icon: <Server className="w-5 h-5 text-[#8C9BFF]" /> },
-              { title: 'YOLO deep learning', purpose: 'Custom trained thermal optical object detection model', icon: <Cpu className="w-5 h-5 text-[#63D8E6]" /> },
+              { title: 'FastAPI backend', purpose: 'Python async high-concurrency API server with native WebSocket broadcast', icon: <Server className="w-5 h-5 text-[#8C9BFF]" /> },
+              { title: 'YOLO deep learning', purpose: 'Custom trained thermal optical object detection model (YOLO11n)', icon: <Cpu className="w-5 h-5 text-[#63D8E6]" /> },
               { title: 'ByteTrack Tracker', purpose: 'Multi-object IoU association & trajectory motion tracking engine', icon: <Crosshair className="w-5 h-5 text-[#8C9BFF]" /> },
               { title: 'React + Vite', purpose: 'High-performance UI with HMR state synchronization', icon: <Layout className="w-5 h-5 text-[#63D8E6]" /> },
-              { title: 'Tailwind CSS', purpose: 'Dark intelligence design tokens & hardware-accelerated canvas', icon: <Camera className="w-5 h-5 text-[#8C9BFF]" /> },
-              { title: 'SQLite database', purpose: 'Persistent telemetry logs & zone configuration store', icon: <Database className="w-5 h-5 text-[#68D7A5]" /> },
+              { title: 'Tailwind CSS', purpose: 'Dark intelligence design tokens & GPU-accelerated canvas styling', icon: <Camera className="w-5 h-5 text-[#8C9BFF]" /> },
+              { title: 'SQLite database', purpose: 'Persistence layer for alert logs, zone coordinates, and system audit history', icon: <Database className="w-5 h-5 text-[#68D7A5]" /> },
             ].map((tech) => (
               <motion.div
                 key={tech.title}
                 variants={cardVariants}
-                className="soft-surface-interactive p-6 space-y-3 flex items-start space-x-4"
+                className="p-5.5 rounded-2xl bg-[#0B0F16] border border-white/[0.07] hover:border-white/20 hover:bg-[#0E141E] hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)] transition-all duration-200 ease-out flex items-start space-x-4"
               >
-                <div className="p-2.5 rounded-xl bg-white/[0.04] border border-white/[0.06] shrink-0">
+                <div className="w-10 h-10 rounded-xl bg-white/[0.035] border border-white/[0.06] flex items-center justify-center shrink-0">
                   {tech.icon}
                 </div>
                 <div>
@@ -606,19 +607,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
         variants={containerVariants}
         initial="hidden"
         whileInView="visible"
-        viewport={{ once: true, margin: '-80px' }}
-        className="py-28 bg-[#0B0F16] border-t border-white/[0.07]"
+        viewport={{ once: true, margin: '-60px' }}
+        className="py-18 lg:py-22 bg-[#0B0F16] border-t border-white/[0.07]"
       >
-        <div className="max-w-7xl mx-auto px-6 space-y-16">
-          <div className="text-center space-y-3 max-w-2xl mx-auto">
+        <div className="max-w-7xl mx-auto px-6 space-y-10 lg:space-y-12">
+          <div className="text-center space-y-2.5 max-w-2xl mx-auto">
             <div className="inline-flex items-center space-x-2 text-[#63D8E6] text-xs font-sans bg-[#63D8E6]/10 px-3 py-1 rounded-full border border-[#63D8E6]/20 font-medium">
               <Target className="w-3.5 h-3.5" />
               <span>MISSION SECTORS</span>
             </div>
-            <h2 className="text-3xl lg:text-4xl font-bold font-sans text-[#F5F7FA]">SURVEILLANCE DEPLOYMENT SECTORS</h2>
+            <h2 className="text-3xl lg:text-4xl font-bold font-sans tracking-tight text-[#F5F7FA]">SURVEILLANCE DEPLOYMENT SECTORS</h2>
+            <p className="text-[#8D98AA] text-sm font-sans leading-relaxed max-w-xl mx-auto">
+              Configurable operational threat parameters tailored to diverse deployment perimeters.
+            </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4.5">
             {[
               'BORDER SURVEILLANCE',
               'CRITICAL INFRASTRUCTURE',
@@ -630,19 +634,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
               <motion.div
                 key={usecase}
                 variants={cardVariants}
-                className="soft-surface-interactive p-6 flex items-center justify-between group cursor-pointer"
+                className="p-5 rounded-2xl bg-[#05070B] border border-white/[0.07] hover:border-[#63D8E6]/30 hover:bg-[#0E141E] hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(0,0,0,0.3)] transition-all duration-200 ease-out flex items-center justify-between group cursor-pointer"
               >
                 <div className="flex items-center space-x-4">
-                  <div className="w-9 h-9 rounded-xl bg-[#63D8E6]/10 border border-[#63D8E6]/20 flex items-center justify-center text-[#63D8E6] shrink-0 group-hover:bg-[#63D8E6] group-hover:text-[#05070B] transition-colors">
+                  <div className="w-9 h-9 rounded-xl bg-[#63D8E6]/[0.08] border border-[#63D8E6]/20 flex items-center justify-center text-[#63D8E6] shrink-0 group-hover:bg-[#63D8E6]/15 group-hover:border-[#63D8E6]/35 transition-colors">
                     <CheckCircle2 className="w-4 h-4" />
                   </div>
                   <div>
-                    <h4 className="text-xs font-semibold font-mono text-[#F5F7FA]">{usecase}</h4>
-                    <p className="text-xs text-[#8D98AA] font-sans mt-0.5">Thermal intelligence active</p>
+                    <h4 className="text-xs font-semibold font-mono tracking-wide text-[#F5F7FA]">{usecase}</h4>
+                    <p className="text-[11px] text-[#8D98AA] font-sans mt-0.5">Thermal intelligence active</p>
                   </div>
                 </div>
 
-                <ArrowRight className="w-4 h-4 text-[#8D98AA] group-hover:text-[#63D8E6] group-hover:translate-x-1 transition-all" />
+                <ArrowRight className="w-4 h-4 text-[#5E697A] group-hover:text-[#63D8E6] group-hover:translate-x-0.5 transition-all duration-200 shrink-0" />
               </motion.div>
             ))}
           </div>
@@ -655,35 +659,36 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
         variants={containerVariants}
         initial="hidden"
         whileInView="visible"
-        viewport={{ once: true, margin: '-80px' }}
-        className="py-32 bg-[#05070B] relative text-center"
+        viewport={{ once: true, margin: '-60px' }}
+        className="py-20 lg:py-24 bg-[#05070B] relative text-center"
       >
         <div className="max-w-5xl mx-auto px-6">
           <motion.div
             variants={cardVariants}
-            className="rounded-3xl border border-white/[0.08] bg-gradient-to-b from-[#0B0F16] via-[#05070B] to-[#0B0F16] p-12 lg:p-20 shadow-2xl relative overflow-hidden space-y-8"
+            className="rounded-3xl border border-white/[0.08] bg-gradient-to-b from-[#0B0F16] via-[#05070B] to-[#0B0F16] p-10 lg:p-16 shadow-2xl relative overflow-hidden space-y-7"
           >
             {/* Ambient Background Radial Light */}
             <div className="absolute inset-0 ambient-glow-violet pointer-events-none opacity-40" />
 
-            <div className="space-y-4 relative z-10 max-w-2xl mx-auto">
-              <h2 className="text-4xl lg:text-5xl font-bold font-sans text-[#F5F7FA] tracking-tight leading-tight">
+            <div className="space-y-3.5 relative z-10 max-w-2xl mx-auto">
+              <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold font-sans text-[#F5F7FA] tracking-tight leading-tight">
                 TURN SURVEILLANCE<br />
                 <span className="text-[#8C9BFF]">INTO INTELLIGENCE.</span>
               </h2>
-              <p className="text-sm font-sans text-[#8D98AA]">
+              <p className="text-sm font-sans text-[#8D98AA] tracking-wide">
                 Monitor. Detect. Track. Respond.
               </p>
             </div>
 
-            <div className="relative z-10">
+            <div className="relative z-10 pt-1">
               <motion.button
                 whileHover={{ y: -2 }}
                 whileTap={{ scale: 0.98 }}
                 onClick={onEnterCommandCenter}
-                className="px-8 py-4 rounded-xl bg-[#63D8E6] hover:bg-[#7AE3EF] text-[#05070B] font-sans font-semibold text-xs tracking-wide shadow-[0_6px_24px_rgba(99,216,230,0.25)] inline-flex items-center space-x-2 cursor-pointer"
+                className="h-12 px-8 rounded-xl bg-[#63D8E6] hover:bg-[#7AE3EF] text-[#05070B] font-sans font-semibold text-xs tracking-wider shadow-[0_4px_20px_rgba(99,216,230,0.22)] inline-flex items-center space-x-2 cursor-pointer transition-all duration-200"
               >
-                <span>OPEN COMMAND CENTER →</span>
+                <span>OPEN COMMAND CENTER</span>
+                <ArrowRight className="w-4 h-4" />
               </motion.button>
             </div>
           </motion.div>
@@ -691,7 +696,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterCommandCenter }
       </motion.section>
 
       {/* FOOTER */}
-      <footer className="py-12 bg-[#040508] border-t border-white/[0.07] text-xs font-sans text-[#8D98AA]">
+      <footer className="py-10 bg-[#040508] border-t border-white/[0.07] text-xs font-sans text-[#8D98AA]">
         <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="space-y-1 text-center md:text-left">
             <div className="font-semibold text-[#F5F7FA]">AI-MULTISENSE v1.0</div>

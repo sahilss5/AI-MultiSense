@@ -21,6 +21,7 @@ export interface TrajectoryTarget {
   threat_level?: string;
   zone?: string;
   bbox?: [number, number, number, number];
+  trajectory?: [number, number][];
   is_demo?: boolean;
 }
 
@@ -47,7 +48,7 @@ export const TargetTrajectory3D: React.FC<TargetTrajectory3DProps> = ({
   const trackHistoryRef = useRef<Map<number, { x: number; y: number }[]>>(new Map());
   const [historyPoints, setHistoryPoints] = useState<{ x: number; y: number }[]>([]);
 
-  // Update history points whenever the selected target's position/bbox updates
+  // Update history points whenever the selected target's position/bbox/trajectory updates
   useEffect(() => {
     if (!target) {
       setHistoryPoints([]);
@@ -55,6 +56,23 @@ export const TargetTrajectory3D: React.FC<TargetTrajectory3DProps> = ({
     }
 
     const tid = target.track_id;
+
+    // 1. If target comes with pre-recorded real ByteTrack trajectory points, use them directly!
+    if (target.trajectory && Array.isArray(target.trajectory) && target.trajectory.length > 0) {
+      const mapped = target.trajectory.map((pt: any) => {
+        const cx = Array.isArray(pt) ? pt[0] : (typeof pt?.x === 'number' ? pt.x : 0.5);
+        const cy = Array.isArray(pt) ? pt[1] : (typeof pt?.y === 'number' ? pt.y : 0.5);
+        return {
+          x: Math.round(35 + Math.max(0, Math.min(1, cx)) * 210),
+          y: Math.round(25 + Math.max(0, Math.min(1, cy)) * 130),
+        };
+      });
+      trackHistoryRef.current.set(tid, mapped);
+      setHistoryPoints(mapped);
+      return;
+    }
+
+    // 2. Otherwise calculate current center from bbox
     let cx = 0.5;
     let cy = 0.5;
     if (target.bbox && target.bbox.length === 4) {
@@ -72,12 +90,12 @@ export const TargetTrajectory3D: React.FC<TargetTrajectory3DProps> = ({
 
     let updated = existing;
     if (!last || Math.hypot(last.x - svgX, last.y - svgY) >= 3) {
-      updated = [...existing, { x: svgX, y: svgY }].slice(-15);
+      updated = [...existing, { x: svgX, y: svgY }].slice(-25);
       trackHistoryRef.current.set(tid, updated);
     }
 
     setHistoryPoints(updated);
-  }, [target?.track_id, target?.bbox]);
+  }, [target?.track_id, target?.bbox, target?.trajectory]);
 
   // Micro-parallax on mouse move (Desktop only)
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -428,11 +446,40 @@ export const TargetTrajectory3D: React.FC<TargetTrajectory3DProps> = ({
               </>
             )}
 
-            {/* Compass Directional Labels */}
-            <text x="140" y="22" fill="rgba(85, 217, 245, 0.75)" fontSize="8" fontFamily="JetBrains Mono" textAnchor="middle" fontWeight="bold">N</text>
-            <text x="260" y="98" fill="rgba(154, 167, 184, 0.55)" fontSize="7" fontFamily="JetBrains Mono" textAnchor="middle">E</text>
-            <text x="140" y="166" fill="rgba(154, 167, 184, 0.55)" fontSize="7" fontFamily="JetBrains Mono" textAnchor="middle">S</text>
-            <text x="20" y="98" fill="rgba(154, 167, 184, 0.55)" fontSize="7" fontFamily="JetBrains Mono" textAnchor="middle">W</text>
+            {/* Informative Position / Track History Indicator */}
+            {target && historyPoints.length < 2 && (
+              <g>
+                <text
+                  x="140"
+                  y="120"
+                  fill="rgba(154, 167, 184, 0.85)"
+                  fontSize="7.5"
+                  fontFamily="JetBrains Mono, monospace"
+                  textAnchor="middle"
+                  fontWeight="bold"
+                  letterSpacing="0.5px"
+                >
+                  {historyPoints.length === 1 ? '1 POSITION RECORDED' : `${historyPoints.length} POSITIONS RECORDED`}
+                </text>
+                <text
+                  x="140"
+                  y="132"
+                  fill="rgba(154, 167, 184, 0.65)"
+                  fontSize="6.5"
+                  fontFamily="JetBrains Mono, monospace"
+                  textAnchor="middle"
+                  letterSpacing="0.2px"
+                >
+                  Trajectory requires 2+ movement points.
+                </text>
+              </g>
+            )}
+
+            {/* Image Coordinate Axis Labels (Normalized 2D Projection) */}
+            <text x="140" y="22" fill="rgba(85, 217, 245, 0.75)" fontSize="7" fontFamily="JetBrains Mono" textAnchor="middle" fontWeight="bold">-Y (UP)</text>
+            <text x="250" y="98" fill="rgba(154, 167, 184, 0.55)" fontSize="7" fontFamily="JetBrains Mono" textAnchor="middle">+X (RIGHT)</text>
+            <text x="140" y="166" fill="rgba(154, 167, 184, 0.55)" fontSize="7" fontFamily="JetBrains Mono" textAnchor="middle">+Y (DOWN)</text>
+            <text x="30" y="98" fill="rgba(154, 167, 184, 0.55)" fontSize="7" fontFamily="JetBrains Mono" textAnchor="middle">-X (LEFT)</text>
           </svg>
 
           {/* CURRENT TARGET POSITION WITH 3D ELEVATION STEM & PULSE */}
@@ -549,11 +596,11 @@ export const TargetTrajectory3D: React.FC<TargetTrajectory3DProps> = ({
         {/* DIRECTION VECTOR */}
         <div className="p-2 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] space-y-0.5 min-w-0 transition-colors hover:bg-[var(--bg-elevated)]">
           <div className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-wider flex items-center justify-between">
-            <span>DIRECTION</span>
+            <span title="Calculated from consecutive pixel coordinates">DIRECTION · IMAGE-BASED MOVEMENT</span>
             <Navigation className="w-3 h-3 text-[var(--thermal-cyan)] transform rotate-45" />
           </div>
           <div className="text-xs font-bold text-[var(--thermal-cyan)] truncate">
-            {target?.direction || 'N/A'}
+            {target?.direction && target.direction !== 'N/A' ? target.direction : 'STATIONARY'}
           </div>
         </div>
 

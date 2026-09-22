@@ -3,7 +3,7 @@ import json
 import uuid
 from sqlmodel import SQLModel, create_engine, Session, select
 from backend.app.core.config import settings
-from backend.app.models.db_models import ZoneModel, SettingsModel, AlertModel, VideoRecordModel
+from backend.app.models.db_models import ZoneModel, SettingsModel, AlertModel, VideoRecordModel, SessionSummaryModel
 
 # Ensure database directory exists
 db_path = settings.DATABASE_URL.replace("sqlite:///", "")
@@ -26,6 +26,15 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 def init_db():
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
+        # Migrate alerts table to ensure video_id column exists
+        from sqlalchemy import text
+        try:
+            cols = [r[1] for r in session.execute(text("PRAGMA table_info(alerts)")).all()]
+            if "video_id" not in cols:
+                session.execute(text("ALTER TABLE alerts ADD COLUMN video_id VARCHAR"))
+                session.commit()
+        except Exception:
+            pass
         # Initialize default settings if not existing
         existing_settings = session.exec(select(SettingsModel).where(SettingsModel.id == 1)).first()
         if not existing_settings:

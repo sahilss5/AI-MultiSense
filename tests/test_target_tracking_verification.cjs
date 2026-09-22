@@ -89,25 +89,34 @@ async function runTargetTrackingVerification() {
   try {
     // 1. Wait for app load and enter command center
     console.log('[1/7] Waiting for AI-MULTISENSE to load and entering command center...');
-    await new Promise(r => setTimeout(r, 2000));
-    await evaluate(`(() => {
-      const btn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('ENTER') || b.textContent.includes('COMMAND'));
-      if (btn) btn.click();
-    })()`);
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      const hasBooted = await evaluate(`(() => {
+        const btn = Array.from(document.querySelectorAll('button, a')).find(b => b.innerText && (b.innerText.includes('ENTER COMMAND CENTER') || b.innerText.includes('COMMAND')));
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
+      })()`);
+      if (hasBooted) break;
+    }
     await new Promise(r => setTimeout(r, 1500));
 
     // 2. Navigate to Target Tracking page
     console.log('[2/7] Navigating to TARGET TRACKING page...');
-    await evaluate(`(() => {
-      const btn = document.querySelector('button[data-page-id="tracking"]');
-      if (btn) {
-        btn.click();
-        return true;
-      }
-      return false;
-    })()`);
-
-    await new Promise(r => setTimeout(r, 1500));
+    for (let i = 0; i < 10; i++) {
+      await evaluate(`(() => {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }));
+        const asideBtns = Array.from(document.querySelectorAll('aside button'));
+        const targetBtn = asideBtns.find(b => b.textContent && b.textContent.includes('Target Tracking'));
+        if (targetBtn) targetBtn.click();
+      })()`);
+      await new Promise(r => setTimeout(r, 500));
+      const isTracking = await evaluate(`(() => document.body.innerText.includes('Real-time object tracking and target movement visualization'))()`);
+      if (isTracking) break;
+    }
+    await new Promise(r => setTimeout(r, 1000));
 
     const pageSnippet = await evaluate(`(() => document.body.innerText.slice(0, 800))()`);
     console.log('--- PAGE SNIPPET ---:\n', pageSnippet, '\n--- END SNIPPET ---');
@@ -168,7 +177,7 @@ async function runTargetTrackingVerification() {
       return {
         hasDirectoryHeader: text.includes('ACTIVE TARGET DIRECTORY'),
         ths,
-        hasNoActiveTargets: text.includes('NO ACTIVE TARGETS'),
+        hasNoActiveTargets: text.includes('NO ACTIVE TRACKS') || text.includes('NO ACTIVE TARGETS'),
         hasStartVideo: text.includes('Start a thermal video to begin tracking.'),
       };
     })()`);

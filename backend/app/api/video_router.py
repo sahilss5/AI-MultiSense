@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Optional
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlmodel import Session
@@ -161,3 +162,42 @@ async def clear_active_video():
         status="no_video_selected",
         analysis_mode=analysis_manager.get_analysis_mode()
     )
+
+@router.get("/threats")
+def get_session_threats():
+    """
+    Returns all real threats detected and recorded during the current video session,
+    including their real ByteTrack trajectory coordinates and direction.
+    """
+    return list(analysis_manager.session_threats.values())
+
+@router.get("/tracks/{track_id}")
+def get_session_track(track_id: int):
+    """
+    Returns historical track information and real trajectory points for a given track_id
+    recorded during the current video session.
+    """
+    track = analysis_manager.session_tracks.get(track_id)
+    if not track:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Track T-{track_id} not found in current session."
+        )
+    return track
+
+@router.get("/session-summary")
+def get_session_summary(video_id: Optional[str] = None):
+    """
+    Returns complete session summary with real detection counts, unique track counts,
+    class breakdown, threat statistics, and complete track histories.
+    """
+    return analysis_manager.get_session_summary(video_id)
+
+@router.get("/tracks")
+def get_session_tracks(video_id: Optional[str] = None):
+    """
+    Returns all unique tracks recorded during the session.
+    """
+    summary = analysis_manager.get_session_summary(video_id)
+    return summary.get("tracks", [])
+

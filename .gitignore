@@ -1,30 +1,63 @@
+# Environment variables
 .env
 .env.*
 !.env.example
 
+# Python virtual environment & cache
 venv/
 .venv/
 __pycache__/
+*.py[cod]
 .pytest_cache/
 
+# IDE
 .vscode/
+.idea/
 
-*.md
-
+# Model files (allow the production model)
 *.pt
 *.pth
 *.onnx
+!models/thermal/best.pt
 
+# Large media & video files (allow official test fixture)
 *.mp4
 *.avi
 *.mov
 *.mkv
 *.zip
+!data/combined_thermal_test.mp4
 
+# Windows compiled binaries
+*.dll
+
+# Database & runtime state
+data/surveillance.db
+data/surveillance.db-shm
+data/surveillance.db-wal
+
+# Dynamic surveillance data directories
+data/uploads/*
+!data/uploads/.gitkeep
+data/snapshots/*
+!data/snapshots/.gitkeep
+
+# Node & Frontend build outputs
+node_modules/
+dist/
+frontend/dist/
+
+# Test output artifacts
+tests/*.webm
+tests/*.png
+tests/downloads_snapshot/
+
+# Runtime training / experiment logs
 runs/
 outputs/
 results/
 logs/
 
+# OS artifacts
 .DS_Store
 Thumbs.db

@@ -7,6 +7,8 @@ import os
 API_BASE = "http://127.0.0.1:8000/api"
 WS_URL = "ws://127.0.0.1:8000/ws/live"
 VIDEO_PATH = r"D:\2ND TRAINED\2ND TRAINED IMP\VIDEO TESTING\combined_thermal_test.mp4"
+if not os.path.exists(VIDEO_PATH):
+    VIDEO_PATH = r"D:\MAJOR PROJECT DEMO\THERMAL_EXAM_DEMO\VIDEO\thermal_exam_demo_20s.mp4"
 
 
 async def _run_test_live_threats_and_alerts():

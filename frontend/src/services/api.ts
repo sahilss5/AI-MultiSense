@@ -9,10 +9,12 @@ import {
   VideoStatusResponse,
   AlertRecord,
   SnapshotResponse,
-  SnapshotListItem
+  SnapshotListItem,
+  SessionSummary,
+  SessionTrack
 } from '../types/schema';
 
-const API_BASE_URL = 'http://127.0.0.1:8000/api';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -41,6 +43,26 @@ export const apiService = {
 
   getThreats: async (): Promise<ThermalDetectionObject[]> => {
     const res = await apiClient.get<ThermalDetectionObject[]>('/threats');
+    return res.data;
+  },
+
+  getSessionThreats: async (): Promise<any[]> => {
+    const res = await apiClient.get<any[]>('/video/threats');
+    return res.data;
+  },
+
+  getSessionTrack: async (trackId: number): Promise<any> => {
+    const res = await apiClient.get<any>(`/video/tracks/${trackId}`);
+    return res.data;
+  },
+
+  getSessionTracks: async (videoId?: string): Promise<SessionTrack[]> => {
+    const res = await apiClient.get<SessionTrack[]>('/video/tracks', { params: videoId ? { video_id: videoId } : {} });
+    return res.data;
+  },
+
+  getSessionSummary: async (videoId?: string): Promise<SessionSummary> => {
+    const res = await apiClient.get<SessionSummary>('/video/session-summary', { params: videoId ? { video_id: videoId } : {} });
     return res.data;
   },
 
@@ -87,7 +109,7 @@ export const apiService = {
   },
 
   // Alert History
-  getAlertHistory: async (params?: { limit?: number; severity?: string; object_class?: string }): Promise<AlertRecord[]> => {
+  getAlertHistory: async (params?: { limit?: number; severity?: string; object_class?: string; video_id?: string }): Promise<AlertRecord[]> => {
     const res = await apiClient.get<AlertRecord[]>('/alerts/history', { params });
     return res.data;
   },
@@ -154,8 +176,12 @@ export const apiService = {
   },
 
   // Snapshot Evidence API
-  saveSnapshot: async (imageData: string): Promise<SnapshotResponse> => {
-    const res = await apiClient.post<SnapshotResponse>('/snapshots', { image_data: imageData });
+  saveSnapshot: async (imageData: string, filenamePrefix?: string): Promise<SnapshotResponse> => {
+    const payload: { image_data: string; filename_prefix?: string } = { image_data: imageData };
+    if (filenamePrefix) {
+      payload.filename_prefix = filenamePrefix;
+    }
+    const res = await apiClient.post<SnapshotResponse>('/snapshots', payload);
     return res.data;
   },
 

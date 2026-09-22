@@ -47,6 +47,7 @@ class AlertModel(SQLModel, table=True):
     severity: str = Field(default="HIGH")
     status: str = Field(default="ACTIVE")
     confidence: Optional[float] = Field(default=None)
+    video_id: Optional[str] = Field(default=None)
 
 
 class VideoRecordModel(SQLModel, table=True):
@@ -58,3 +59,28 @@ class VideoRecordModel(SQLModel, table=True):
     file_size: int = Field(default=0)
     status: str = Field(default="ready")
     uploaded_at: str = Field(default="")
+
+
+class SessionSummaryModel(SQLModel, table=True):
+    __tablename__: ClassVar[str] = "session_summaries"
+
+    id: str = Field(default="", primary_key=True)  # ses_<video_id>
+    video_id: str = Field(default="", index=True)
+    session_id: str = Field(default="")
+    filename: str = Field(default="")
+    status: str = Field(default="completed")
+    total_frames: int = Field(default=0)
+    total_detections: int = Field(default=0)
+    unique_tracks: int = Field(default=0)
+    threat_count: int = Field(default=0)
+    high_threat_count: int = Field(default=0)
+    average_confidence: float = Field(default=0.0)
+    video_duration: float = Field(default=0.0)
+    first_detection_time: Optional[str] = Field(default=None)
+    last_detection_time: Optional[str] = Field(default=None)
+    class_counts_json: str = Field(default="{}")
+    class_detection_counts_json: str = Field(default="{}")
+    tracks_json: str = Field(default="[]")
+    created_at: str = Field(default="")
+    updated_at: str = Field(default="")
+

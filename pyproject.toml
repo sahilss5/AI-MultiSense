@@ -4,6 +4,8 @@ executionEnvironments = [
   { root = "." }
 ]
 extraPaths = ["."]
+venvPath = "."
+venv = "venv"
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 

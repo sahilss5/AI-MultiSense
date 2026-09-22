@@ -92,6 +92,7 @@ class AnalyticsResponse(BaseModel):
 # Snapshot Schemas
 class SnapshotCreateRequest(BaseModel):
     image_data: str = Field(..., description="Base64 encoded PNG image data (with or without data URL prefix)")
+    filename_prefix: Optional[str] = Field(None, description="Optional custom prefix for snapshot filename")
 
 class SnapshotResponse(BaseModel):
     success: bool

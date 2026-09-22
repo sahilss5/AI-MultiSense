@@ -13,13 +13,15 @@ def get_alerts_history(
     limit: int = Query(50, ge=1, le=500),
     severity: Optional[str] = None,
     object_class: Optional[str] = None,
+    video_id: Optional[str] = None,
     session: Session = Depends(get_session)
 ):
     return AlertService.get_alert_history(
         session=session,
         limit=limit,
         severity=severity,
-        object_class=object_class
+        object_class=object_class,
+        video_id=video_id
     )
 
 @router.patch("/{alert_id}", response_model=AlertModel)

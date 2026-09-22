@@ -50,6 +50,8 @@ export interface ThermalDetectionObject {
   id: string;
   sensor: "thermal" | "rgb";
   class: ObjectClass;
+  class_name?: ObjectClass;
+  class_id?: number | null;
   confidence: number;
   track_id: number;
   bbox: [number, number, number, number]; // [x1, y1, x2, y2] normalized 0-1
@@ -58,6 +60,7 @@ export interface ThermalDetectionObject {
   direction?: string | null;
   altitude?: string | null;
   duration_seconds?: number | null;
+  trajectory?: [number, number][];
   threat: boolean;
   threat_level?: ThreatLevel | null;
   threat_reason?: string | null;
@@ -164,6 +167,7 @@ export interface AlertRecord {
   severity: ThreatLevel;
   status: 'ACTIVE' | 'ACKNOWLEDGED' | 'RESOLVED' | string;
   confidence?: number | null;
+  video_id?: string | null;
 }
 
 export interface SnapshotResponse {
@@ -180,4 +184,65 @@ export interface SnapshotListItem {
   timestamp: string;
   size_bytes: number;
 }
+export interface PositionCoord {
+  x: number;
+  y: number;
+}
 
+export interface MovementPoint {
+  x: number;
+  y: number;
+  timestamp?: string;
+}
+
+export interface SessionTrack {
+  session_id: string;
+  video_id?: string;
+  track_id: number;
+  class_name: string;
+  class?: string;
+  class_id?: number | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  detection_count: number;
+  average_confidence: number;
+  minimum_confidence: number;
+  maximum_confidence: number;
+  confidence?: number;
+  threat: boolean;
+  threat_level: ThreatLevel;
+  threat_reason: string | null;
+  zone: string | null;
+  direction: string | null;
+  speed: number | null;
+  duration_seconds?: number;
+  bbox?: [number, number, number, number];
+  last_position: PositionCoord | null;
+  movement_points: MovementPoint[];
+  trajectory?: [number, number][];
+}
+
+export interface SessionSummary {
+  session_id: string;
+  video_id: string;
+  status: VideoStatusType;
+  total_detections: number;
+  unique_tracks: number;
+  total_threats: number;
+  high_threats: number;
+  frames_processed: number;
+  total_video_frames: number;
+  average_confidence: number;
+  video_duration: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  class_counts: {
+    Person?: number;
+    Vehicle?: number;
+    Animal?: number;
+    Drone?: number;
+    'Person With Bag'?: number;
+    [key: string]: number | undefined;
+  };
+  tracks: SessionTrack[];
+}

@@ -8,7 +8,7 @@ import websockets
 
 API_BASE = "http://127.0.0.1:8000/api"
 WS_URL = "ws://127.0.0.1:8000/ws/live"
-TEST_VIDEO_PATH = r"D:\2ND TRAINED\2ND TRAINED IMP\VIDEO TESTING\combined_thermal_test.mp4"
+TEST_VIDEO_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "combined_thermal_test.mp4"))
 
 
 async def run_pipeline_tests():

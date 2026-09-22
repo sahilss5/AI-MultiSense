@@ -25,7 +25,7 @@ class AlertService:
         cls._recent_alerts.clear()
 
     @classmethod
-    def record_threat(cls, session: Session, det: ThermalDetectionObject) -> Optional[AlertModel]:
+    def record_threat(cls, session: Session, det: ThermalDetectionObject, video_id: Optional[str] = None) -> Optional[AlertModel]:
         if not det.threat:
             return None
 
@@ -66,6 +66,7 @@ class AlertService:
             severity=det.threat_level or "HIGH",
             status="ACTIVE",
             confidence=round(float(det.confidence), 4) if det.confidence is not None else None,
+            video_id=video_id,
         )
         session.add(alert)
         session.commit()
@@ -91,13 +92,16 @@ class AlertService:
         session: Session,
         limit: int = 50,
         severity: Optional[str] = None,
-        object_class: Optional[str] = None
+        object_class: Optional[str] = None,
+        video_id: Optional[str] = None
     ) -> List[AlertModel]:
         statement = select(AlertModel).order_by(desc(col(AlertModel.timestamp)))
         if severity:
             statement = statement.where(AlertModel.severity == severity)
         if object_class:
             statement = statement.where(AlertModel.object_class == object_class)
+        if video_id:
+            statement = statement.where(AlertModel.video_id == video_id)
         statement = statement.limit(limit)
         results = session.exec(statement).all()
         return list(results)

@@ -56,15 +56,16 @@ def create_snapshot(request: SnapshotCreateRequest):
     snapshots_dir = os.path.abspath(settings.SNAPSHOTS_DIR)
     os.makedirs(snapshots_dir, exist_ok=True)
 
-    # Generate timestamp-based filename: thermal_snapshot_YYYYMMDD_HHMMSS.png
+    # Generate timestamp-based filename: thermal_snapshot_YYYYMMDD_HHMMSS.png or thermal_ai_snapshot_...
+    prefix = getattr(request, "filename_prefix", None) or "thermal_snapshot_"
     base_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"thermal_snapshot_{base_timestamp}.png"
+    filename = f"{prefix}{base_timestamp}.png"
     target_filepath = os.path.join(snapshots_dir, filename)
 
     # If clicked rapidly in the same second, append collision counter to guarantee uniqueness
     counter = 1
     while os.path.exists(target_filepath):
-        filename = f"thermal_snapshot_{base_timestamp}_{counter}.png"
+        filename = f"{prefix}{base_timestamp}_{counter}.png"
         target_filepath = os.path.join(snapshots_dir, filename)
         counter += 1
 

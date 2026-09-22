@@ -113,6 +113,7 @@ class YOLODetectionService(YOLODetectionInterface):
                 id=f"det_{uuid.uuid4().hex[:8]}",
                 sensor="thermal",
                 class_name=class_name,
+                class_id=cls_id,
                 confidence=round(confidence, 4),
                 track_id=track_id,
                 bbox=norm_bbox,

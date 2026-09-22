@@ -26,7 +26,9 @@ def main():
     # -------------------------------------------------------------
     # PART A: Single Existing Thermal Image Detection Test
     # -------------------------------------------------------------
-    single_img_path = r"D:\2ND TRAINED\2ND TRAINED IMP\FOR TESTING\person_with_bag_1490.jpg"
+    single_img_path = os.path.join(os.path.dirname(__file__), "fixtures", "thermal_frame1.jpg")
+    if not os.path.exists(single_img_path):
+        single_img_path = r"D:\2ND TRAINED\2ND TRAINED IMP\FOR TESTING\person_with_bag_1490.jpg"
     print(f"\n[2] Reading single thermal image with OpenCV: {single_img_path}")
     assert os.path.exists(single_img_path), f"File not found: {single_img_path}"
 

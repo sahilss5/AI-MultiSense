@@ -19,8 +19,9 @@ class MockTrackingService(TrackingInterface):
         now = time.time()
         updated_detections = []
 
-        for det in detections:
-            track_id = det.track_id
+        for idx, det in enumerate(detections):
+            track_id = det.track_id if det.track_id is not None else (idx + 1)
+            det.track_id = track_id
             bbox = det.bbox
             center_x = (bbox[0] + bbox[2]) / 2.0
             center_y = (bbox[1] + bbox[3]) / 2.0

@@ -128,15 +128,21 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
     stream: cameraStream,
     resolution: cameraResolution,
     fps: cameraFps,
-    isRecording,
-    recordingSeconds,
     scanCameras,
     connectCamera,
     disconnectCamera,
     takeSnapshot,
-    startRecording,
-    stopRecording,
   } = useThermalCamera();
+
+  // Viewport Surveillance Recording State
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+  const recordingMimeTypeRef = useRef<string>('video/webm');
+  const recordingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const snapshotFnRef = useRef<(() => string | null) | null>(null);
 
   const filteredDetections = detections.filter(
     (d) => d.confidence >= confidenceThreshold
@@ -160,18 +166,12 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
   const handleSnapshot = async () => {
     try {
       let dataUrl: string | null = null;
-      const vid = videoElemRef.current;
 
-      // 1. Capture actual current thermal video frame without overlays
-      if (vid && vid.readyState >= 2 && vid.videoWidth > 0 && vid.videoHeight > 0) {
-        const offscreen = document.createElement('canvas');
-        offscreen.width = vid.videoWidth;
-        offscreen.height = vid.videoHeight;
-        const ctx = offscreen.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(vid, 0, 0, offscreen.width, offscreen.height);
-          dataUrl = offscreen.toDataURL('image/png');
-        }
+      // 1. Capture dedicated AI surveillance snapshot (Clean thermal video + AI overlays, native video aspect ratio)
+      if (snapshotFnRef.current) {
+        dataUrl = snapshotFnRef.current();
+      } else if (recordingCanvasRef.current) {
+        dataUrl = recordingCanvasRef.current.toDataURL('image/png');
       }
 
       // 2. Fallback to main canvas (e.g. for Demo Mode or synthetic stream)
@@ -179,18 +179,36 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
         dataUrl = canvasElemRef.current.toDataURL('image/png');
       }
 
+      // 3. Fallback to raw video element if canvas not ready
+      if (!dataUrl && videoElemRef.current && videoElemRef.current.readyState >= 2) {
+        const vid = videoElemRef.current;
+        const offscreen = document.createElement('canvas');
+        offscreen.width = vid.videoWidth || 1280;
+        offscreen.height = vid.videoHeight || 720;
+        const ctx = offscreen.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(vid, 0, 0, offscreen.width, offscreen.height);
+          dataUrl = offscreen.toDataURL('image/png');
+        }
+      }
+
       if (!dataUrl) {
         throw new Error('Video stream or canvas not ready.');
       }
 
-      // 3. Send to FastAPI backend for permanent storage in data/snapshots/
-      const res = await apiService.saveSnapshot(dataUrl);
+      // 4. Send to FastAPI backend for permanent storage in data/snapshots/
+      const res = await apiService.saveSnapshot(dataUrl, 'thermal_ai_snapshot_');
 
-      // 4. Trigger browser download
+      // 5. Trigger browser download with formatted timestamp filename
       try {
+        const now = new Date();
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const downloadFilename = res.filename || `thermal_ai_snapshot_${ts}.png`;
+
         const a = document.createElement('a');
         a.href = dataUrl;
-        a.download = res.filename || `thermal_snapshot_${Date.now()}.png`;
+        a.download = downloadFilename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -198,11 +216,11 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
         console.warn('Browser download trigger warning:', dlErr);
       }
 
-      // 5. Show confirmation only after successful backend save
+      // 6. Show confirmation only after successful backend save
       const nowTime = formatIST(new Date(), { includeTimeOnly: true });
-      addLiveEvent('SNAPSHOT CAPTURED', 'Thermal frame saved to data/snapshots', false);
+      addLiveEvent('SNAPSHOT CAPTURED', 'Thermal AI detection frame saved to data/snapshots', false);
       setToastMessage({
-        title: 'FRAME CAPTURED & SAVED',
+        title: 'AI SURVEILLANCE SNAPSHOT SAVED',
         time: nowTime,
         isThreat: false,
       });
@@ -220,20 +238,209 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
     }
   };
 
-  // Recording Handler
-  const handleToggleRecording = () => {
-    if (isRecording) {
-      stopRecording();
+  // Viewport Recording Implementation (Captures live thermal canvas + bounding boxes + tracking + threat overlays)
+  const getSupportedVideoMimeType = (): string => {
+    if (typeof MediaRecorder === 'undefined') return '';
+    const candidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4;codecs=avc1',
+      'video/mp4',
+    ];
+    for (const t of candidates) {
+      if (MediaRecorder.isTypeSupported(t)) {
+        return t;
+      }
+    }
+    return '';
+  };
+
+  const startSurveillanceRecording = () => {
+    if (isRecording || (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive')) {
+      console.warn('Surveillance recording is already running.');
+      return;
+    }
+
+    if (typeof MediaRecorder === 'undefined') {
+      setFileError('Recording is not supported by this browser.');
       setToastMessage({
-        title: 'THERMAL RECORDING SAVED',
+        title: 'RECORDING UNSUPPORTED',
+        time: formatIST(new Date(), { includeTimeOnly: true }),
+        isThreat: true,
+      });
+      setTimeout(() => setToastMessage(null), 4000);
+      return;
+    }
+
+    const mimeType = getSupportedVideoMimeType();
+    if (!mimeType) {
+      setFileError('Recording is not supported by this browser.');
+      return;
+    }
+    recordingMimeTypeRef.current = mimeType;
+
+    const canvas = recordingCanvasRef.current || canvasElemRef.current;
+    if (!canvas) {
+      setFileError('Surveillance canvas viewport not initialized.');
+      return;
+    }
+
+    try {
+      const stream: MediaStream = (canvas as any).captureStream ? (canvas as any).captureStream(30) : null;
+      if (!stream) {
+        setFileError('Recording is not supported by this browser.');
+        return;
+      }
+
+      recordedChunksRef.current = [];
+
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 2500000,
+      });
+
+      recorder.ondataavailable = (e: BlobEvent) => {
+        if (e.data && e.data.size > 0) {
+          recordedChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        try {
+          stream.getTracks().forEach((track) => track.stop());
+        } catch (e) {
+          console.warn('Error stopping stream tracks:', e);
+        }
+
+        const chunks = recordedChunksRef.current;
+        recordedChunksRef.current = [];
+
+        if (!chunks || chunks.length === 0) {
+          console.warn('No recording chunks captured.');
+          return;
+        }
+
+        const blob = new Blob(chunks, { type: recordingMimeTypeRef.current || 'video/webm' });
+
+        if (blob.size === 0) {
+          console.warn('Recorded blob is empty (0 bytes).');
+          return;
+        }
+
+        const ext = (recordingMimeTypeRef.current && recordingMimeTypeRef.current.includes('mp4')) ? 'mp4' : 'webm';
+        const d = new Date();
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        const yyyy = d.getFullYear();
+        const mm = pad(d.getMonth() + 1);
+        const dd = pad(d.getDate());
+        const hh = pad(d.getHours());
+        const mi = pad(d.getMinutes());
+        const ss = pad(d.getSeconds());
+        const filename = `AI-MULTISENSE_Record_${yyyy}${mm}${dd}_${hh}${mi}${ss}.${ext}`;
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 1000);
+
+        const sizeMb = (blob.size / (1024 * 1024)).toFixed(2);
+        addLiveEvent('RECORDING SAVED', `${filename} (${sizeMb} MB)`, false);
+        setToastMessage({
+          title: `RECORDING DOWNLOADED: ${filename}`,
+          time: formatIST(new Date(), { includeTimeOnly: true }),
+          isThreat: false,
+        });
+        setTimeout(() => setToastMessage(null), 4000);
+      };
+
+      recorder.onerror = (event: any) => {
+        console.error('MediaRecorder error:', event);
+        setFileError('Recording error encountered.');
+        stopSurveillanceRecording();
+      };
+
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+      setRecordingSeconds(0);
+
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+
+      addLiveEvent('RECORDING STARTED', `Surveillance viewport capture (30 FPS, ${mimeType.split(';')[0]})`, false);
+      setToastMessage({
+        title: 'RECORDING ENGAGED',
         time: formatIST(new Date(), { includeTimeOnly: true }),
         isThreat: false,
       });
-      setTimeout(() => setToastMessage(null), 3500);
-    } else {
-      startRecording();
+      setTimeout(() => setToastMessage(null), 3000);
+    } catch (err: any) {
+      console.error('Failed to start surveillance recording:', err);
+      setFileError(err?.message || 'Recording is not supported by this browser.');
+      setIsRecording(false);
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
     }
   };
+
+  const stopSurveillanceRecording = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    if (mediaRecorderRef.current) {
+      try {
+        if (mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.requestData();
+        }
+        if (mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+      } catch (e) {
+        console.warn('Error stopping MediaRecorder:', e);
+      }
+      mediaRecorderRef.current = null;
+    }
+
+    setIsRecording(false);
+  };
+
+  // Recording Toggle Handler
+  const handleToggleRecording = () => {
+    if (isRecording) {
+      stopSurveillanceRecording();
+    } else {
+      startSurveillanceRecording();
+    }
+  };
+
+  // Clean up recording on component unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (e) {}
+      }
+    };
+  }, []);
 
   // Video File Handlers
   const handleUploadClick = () => {
@@ -243,6 +450,10 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    if (isRecording || (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive')) {
+      stopSurveillanceRecording();
+    }
 
     setIsExplicitlyCleared(false);
     const objUrl = URL.createObjectURL(file);
@@ -256,7 +467,16 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
     }
 
     try {
-      await apiService.uploadVideo(file);
+      const uploadRes = await apiService.uploadVideo(file);
+      if (uploadRes?.video_id) {
+        const serverUrl = apiService.getVideoFileUrl(uploadRes.video_id);
+        setLocalVideoUrl(serverUrl);
+        try {
+          URL.revokeObjectURL(objUrl);
+        } catch (e) {
+          // ignore
+        }
+      }
       onRefreshStatus();
       addLiveEvent('VIDEO LOADED', `Source: ${file.name.toUpperCase()}`, false);
       setToastMessage({
@@ -290,6 +510,9 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
   const isVideoPlaying = isVideoLoaded && status === 'processing';
 
   const handleClearVideo = async () => {
+    if (isRecording || (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive')) {
+      stopSurveillanceRecording();
+    }
     setIsActionPending(true);
     setIsExplicitlyCleared(true);
     try {
@@ -923,9 +1146,10 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
                   ? 'bg-[var(--threat-coral)] text-white shadow-lg animate-pulse'
                   : 'btn-secondary-interactive text-[var(--threat-coral)]'
               }`}
+              title={isRecording ? 'Click to stop recording and download video' : 'Record surveillance view'}
             >
-              <CircleDot className="w-3.5 h-3.5" />
-              <span>{isRecording ? `● RECORDING ${formatSecs(recordingSeconds)}` : 'RECORD'}</span>
+              <CircleDot className={`w-3.5 h-3.5 ${isRecording ? 'animate-spin' : ''}`} />
+              <span>{isRecording ? `● STOP RECORDING (${formatSecs(recordingSeconds)})` : 'RECORD'}</span>
             </button>
 
             <button
@@ -1054,6 +1278,9 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
                 onVideoDimensionsLoaded={(dims) => setVideoDims(dims)}
                 videoRef={videoElemRef}
                 canvasRef={canvasElemRef}
+                recordingCanvasRef={recordingCanvasRef}
+                snapshotFnRef={snapshotFnRef}
+                isRecording={isRecording}
                 playbackRate={playbackSpeed}
               />
             </div>

@@ -54,7 +54,7 @@ const DEFAULT_SETTINGS: SystemSettings = {
   track_persistence_frames: 30,
   rule_zone_intrusion: true,
   rule_overspeed: true,
-  backend_endpoint: 'http://127.0.0.1:8000/api',
+  backend_endpoint: import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api',
   logging_level: 'INFO',
   data_retention_days: 30,
 };

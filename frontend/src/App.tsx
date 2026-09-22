@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PageId, Sidebar } from './components/common/Sidebar';
 import { Header } from './components/common/Header';
@@ -33,7 +33,7 @@ export function App() {
   // Initialize Global Lenis Buttery-Smooth Momentum Scroll Engine
   const { scrollTo } = useSmoothScroll(!isLoading);
 
-  const { detections, isConnected } = useLiveFeed();
+  const { detections, isConnected, fps: liveFps } = useLiveFeed();
   const { videoStatus, systemStatus, refreshStatus } = useVideoStatus(2000);
 
   const [zones, setZones] = useState<Zone[]>([]);
@@ -42,10 +42,23 @@ export function App() {
   // Current surveillance session state & activity tracking
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [currentSessionEvents, setCurrentSessionEvents] = useState<CurrentSessionActivity[]>([]);
+  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
   const seenSessionThreatsRef = useRef<Set<string>>(new Set());
+
+  const currentVideoIdRef = useRef<string | null>(null);
 
   // Watch videoStatus to start or reset the current surveillance session
   useEffect(() => {
+    // If video ID changed to a new video, clear previous video threats
+    if (videoStatus.video_id && currentVideoIdRef.current && videoStatus.video_id !== currentVideoIdRef.current) {
+      currentVideoIdRef.current = videoStatus.video_id;
+      seenSessionThreatsRef.current.clear();
+      setCurrentSessionEvents([]);
+      setSelectedTrackId(null);
+    } else if (videoStatus.video_id && !currentVideoIdRef.current) {
+      currentVideoIdRef.current = videoStatus.video_id;
+    }
+
     if (videoStatus.status === 'processing' || videoStatus.status === 'paused') {
       const backendStartTime = videoStatus.session_start_time
         ? new Date(videoStatus.session_start_time).getTime()
@@ -56,18 +69,20 @@ export function App() {
           return backendStartTime;
         }
         if (!prev) {
-          seenSessionThreatsRef.current.clear();
-          setCurrentSessionEvents([]);
           return Date.now();
         }
         return prev;
       });
-    } else if (videoStatus.status === 'stopped' || videoStatus.status === 'no_video_selected') {
+    } else if (videoStatus.status === 'no_video_selected') {
+      currentVideoIdRef.current = null;
       setSessionStartTime(null);
       seenSessionThreatsRef.current.clear();
       setCurrentSessionEvents([]);
+      setSelectedTrackId(null);
     }
-  }, [videoStatus.status, videoStatus.session_start_time]);
+    // Note: when videoStatus.status === 'completed' or 'stopped', we DO NOT clear sessionStartTime or events
+    // so the recorded threats and activities from that video session remain available for the examiner to inspect!
+  }, [videoStatus.status, videoStatus.video_id, videoStatus.session_start_time]);
 
   // Capture real threat events generated during this session from live detections
   useEffect(() => {
@@ -193,10 +208,65 @@ export function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [scrollTo]);
 
-  const isSessionActive = (videoStatus.status === 'processing' || videoStatus.status === 'paused') && !!sessionStartTime;
+  const isSessionActive = videoStatus.status === 'processing' || videoStatus.status === 'paused';
+
+  const [activeTracksCount, setActiveTracksCount] = useState<number>(0);
+  const activeTracksMapRef = useRef<Map<number, number>>(new Map());
+
+  useEffect(() => {
+    if (!isSessionActive) {
+      activeTracksMapRef.current.clear();
+      setActiveTracksCount(0);
+      return;
+    }
+    const now = Date.now();
+    const map = activeTracksMapRef.current;
+    if (detections && detections.length > 0) {
+      detections.forEach((d, idx) => {
+        const tid = d.track_id != null && d.track_id > 0 ? d.track_id : idx + 1;
+        map.set(tid, now);
+      });
+    }
+    const EXPIRATION_MS = 2500;
+    for (const [tid, lastSeen] of map.entries()) {
+      if (now - lastSeen > EXPIRATION_MS) {
+        map.delete(tid);
+      }
+    }
+    setActiveTracksCount(map.size);
+  }, [detections, isSessionActive]);
+
+  useEffect(() => {
+    if (!isSessionActive) return;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const map = activeTracksMapRef.current;
+      let changed = false;
+      const EXPIRATION_MS = 2500;
+      for (const [tid, lastSeen] of map.entries()) {
+        if (now - lastSeen > EXPIRATION_MS) {
+          map.delete(tid);
+          changed = true;
+        }
+      }
+      if (changed) {
+        setActiveTracksCount(map.size);
+      }
+    }, 400);
+    return () => clearInterval(interval);
+  }, [isSessionActive]);
+
   const activeThreatCount = isSessionActive
-    ? (detections.filter((d) => d.threat).length || (systemStatus?.active_threats ?? 0))
+    ? Math.max(
+        detections.filter((d) => d.threat).length,
+        seenSessionThreatsRef.current.size,
+        systemStatus?.active_threats ?? 0
+      )
     : 0;
+
+  const effectiveFps = isSessionActive
+    ? (liveFps > 0 ? liveFps : (systemStatus?.fps ?? 0.0))
+    : 0.0;
 
   const handlePageSelect = (page: PageId) => {
     setCurrentPage(page);
@@ -241,6 +311,10 @@ export function App() {
                 systemStatus={systemStatus}
                 isConnected={isConnected}
                 onNavigateHome={handleNavigateLanding}
+                fps={effectiveFps}
+                activeTracks={activeTracksCount}
+                activeThreats={activeThreatCount}
+                isSessionActive={isSessionActive}
               />
 
               <div className="main-layout-container flex flex-1 w-full max-w-full min-w-0 relative">
@@ -282,7 +356,15 @@ export function App() {
                         />
                       )}
 
-                      {currentPage === 'tracking' && <TargetTracking detections={detections} />}
+                      {currentPage === 'tracking' && (
+                        <TargetTracking
+                          detections={detections}
+                          isSessionActive={isSessionActive}
+                          videoStatus={videoStatus}
+                          selectedTrackId={selectedTrackId}
+                          onSelectTrackId={setSelectedTrackId}
+                        />
+                      )}
 
                       {currentPage === 'threats' && (
                         <ThreatMonitoring
@@ -290,6 +372,10 @@ export function App() {
                           zones={zones}
                           videoStatus={videoStatus}
                           sessionStartTime={sessionStartTime}
+                          isSessionActive={isSessionActive}
+                          selectedTrackId={selectedTrackId}
+                          onSelectTrackId={setSelectedTrackId}
+                          onNavigate={handlePageSelect}
                         />
                       )}
 

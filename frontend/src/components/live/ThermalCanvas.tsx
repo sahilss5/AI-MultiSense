@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ThermalDetectionObject, Zone } from '../../types/schema';
 
 interface ThermalCanvasProps {
@@ -18,7 +18,11 @@ interface ThermalCanvasProps {
   onVideoDimensionsLoaded?: (dims: { width: number; height: number }) => void;
   videoRef?: React.MutableRefObject<HTMLVideoElement | null>;
   canvasRef?: React.MutableRefObject<HTMLCanvasElement | null>;
+  recordingCanvasRef?: React.MutableRefObject<HTMLCanvasElement | null>;
+  isRecording?: boolean;
   playbackRate?: number;
+  snapshotFnRef?: React.MutableRefObject<(() => string | null) | null>;
+  status?: string;
 }
 
 interface TargetAnimState {
@@ -46,12 +50,18 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
   onVideoDimensionsLoaded,
   videoRef,
   canvasRef: externalCanvasRef,
+  recordingCanvasRef,
+  isRecording = false,
   playbackRate = 1,
+  snapshotFnRef,
+  status,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const internalRecordingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const internalVideoRef = useRef<HTMLVideoElement | null>(null);
   const targetStateMapRef = useRef<Map<number, TargetAnimState>>(new Map());
-  const historyMapRef = useRef<Map<number, Array<{ x: number; y: number }>>>(new Map());
+  const historyMapRef = useRef<Map<number, Array<{ x: number; y: number; nx: number; ny: number }>>>(new Map());
+  const renderCleanSurveillanceFrameRef = useRef<((targetCtx: CanvasRenderingContext2D, targetW: number, targetH: number, videoSource?: HTMLVideoElement | null) => void) | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const hoveredTrackIdRef = useRef<number | null>(null);
   const [hoveredTrackId, setHoveredTrackId] = useState<number | null>(null);
@@ -79,14 +89,21 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
     }
   }, [externalCanvasRef]);
 
-  // Bind live MediaStream or Video File URL to hidden video element
+  // Expose dedicated clean recording canvas ref to parent if requested
+  useEffect(() => {
+    if (recordingCanvasRef) {
+      recordingCanvasRef.current = internalRecordingCanvasRef.current;
+    }
+  }, [recordingCanvasRef]);
+
+  // Bind live MediaStream or Video File URL to video element
   useEffect(() => {
     const video = internalVideoRef.current;
     if (!video) return;
 
     if (sourceMode === 'thermal_camera') {
       if (videoStream && isCameraConnected) {
-        video.src = '';
+        video.removeAttribute('src');
         video.srcObject = videoStream;
         video.play().catch((err) => console.warn('Camera video playback warning:', err));
       } else {
@@ -95,20 +112,22 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
     } else if (sourceMode === 'video_file') {
       video.srcObject = null;
       if (videoUrl) {
-        if (video.src !== videoUrl) {
+        const curSrc = video.src || '';
+        if (!curSrc || (!curSrc.endsWith(videoUrl) && curSrc !== videoUrl)) {
           video.src = videoUrl;
           video.load();
         }
       } else {
-        video.src = '';
+        video.removeAttribute('src');
+        video.load();
       }
     } else {
       video.srcObject = null;
-      video.src = '';
+      video.removeAttribute('src');
     }
   }, [sourceMode, videoStream, isCameraConnected, videoUrl]);
 
-  // Handle video metadata and ended events
+  // Handle video metadata, frame loading, and ended events
   useEffect(() => {
     const video = internalVideoRef.current;
     if (!video) return;
@@ -121,6 +140,15 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
           height: video.videoHeight,
         });
       }
+      if (isPlaying && !isPaused && video.paused) {
+        video.play().catch((err) => console.warn('Play after metadata error:', err));
+      }
+    };
+
+    const handleCanPlay = () => {
+      if (isPlaying && !isPaused && video.paused) {
+        video.play().catch((err) => console.warn('Play on canplay error:', err));
+      }
     };
 
     const handleEnded = () => {
@@ -129,14 +157,24 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
       }
     };
 
+    const handleError = () => {
+      if (video.error) {
+        console.warn('Thermal video element error:', video.error.code, video.error.message);
+      }
+    };
+
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
+    video.addEventListener('canplay', handleCanPlay);
     video.addEventListener('ended', handleEnded);
+    video.addEventListener('error', handleError);
 
     return () => {
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      video.removeEventListener('canplay', handleCanPlay);
       video.removeEventListener('ended', handleEnded);
+      video.removeEventListener('error', handleError);
     };
-  }, [onVideoDimensionsLoaded, onVideoEnded, playbackRate]);
+  }, [onVideoDimensionsLoaded, onVideoEnded, playbackRate, isPlaying, isPaused]);
 
   // Set playbackRate on HTML5 video element
   useEffect(() => {
@@ -148,14 +186,21 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
   // Sync isPlaying / isPaused state to video element
   useEffect(() => {
     const video = internalVideoRef.current;
-    if (!video || sourceMode !== 'video_file') return;
+    if (!video || sourceMode !== 'video_file' || !videoUrl) return;
 
     if (isPlaying && !isPaused) {
-      video.play().catch((err) => console.warn('Video playback warning:', err));
-    } else if (isPaused || !isPlaying) {
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          if (err.name !== 'AbortError') {
+            console.warn('Video playback warning:', err);
+          }
+        });
+      }
+    } else {
       video.pause();
     }
-  }, [isPlaying, isPaused, sourceMode]);
+  }, [isPlaying, isPaused, sourceMode, videoUrl]);
 
   // Sync ref with state for hover checks
   useEffect(() => {
@@ -223,29 +268,31 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
 
       ctx.clearRect(0, 0, width, height);
 
-      // 1. Layer 1: Live Hardware Video Frame OR Video File Frame OR Synthetic Deep Thermal Background
-      const isVideoFile = sourceMode === 'video_file' && video && video.readyState >= 2;
-      const isCamera = sourceMode === 'thermal_camera' && isCameraConnected && video && video.readyState >= 2;
+      // 1. Layer 1: Live Hardware Video Frame OR Video File Frame (Base Layer)
+      const isVideoFile = sourceMode === 'video_file' && Boolean(videoUrl);
+      const isCamera = sourceMode === 'thermal_camera' && isCameraConnected;
+      const hasActiveVideo = isVideoFile || isCamera;
+
+      const vW = (video && video.videoWidth > 0) ? video.videoWidth : 1280;
+      const vH = (video && video.videoHeight > 0) ? video.videoHeight : 720;
 
       let drawX = 0;
       let drawY = 0;
       let drawW = width;
       let drawH = height;
 
-      if (isVideoFile || isCamera) {
-        // Calculate aspect-ratio-preserving rect (Letterbox / Pillarbox fit)
-        const vW = video.videoWidth || width;
-        const vH = video.videoHeight || height;
+      if (hasActiveVideo) {
+        // Calculate aspect-ratio-preserving rect (Letterbox / Pillarbox fit) matching object-contain
         const videoAspect = vW / vH;
         const canvasAspect = width / height;
 
         if (videoAspect > canvasAspect) {
-          // Video is wider than canvas -> black bars top & bottom
+          // Video is wider than canvas -> bars top & bottom
           drawW = width;
           drawH = width / videoAspect;
           drawY = (height - drawH) / 2;
         } else {
-          // Video is taller than canvas -> black bars left & right
+          // Video is taller than canvas -> bars left & right
           drawH = height;
           drawW = height * videoAspect;
           drawX = (width - drawW) / 2;
@@ -253,12 +300,14 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
 
         drawAreaRef.current = { x: drawX, y: drawY, w: drawW, h: drawH };
 
-        // Draw cinema dark background
-        ctx.fillStyle = '#05080D';
-        ctx.fillRect(0, 0, width, height);
-
-        // Draw original video frame preserving aspect ratio
-        ctx.drawImage(video, drawX, drawY, drawW, drawH);
+        // Draw original video frame to canvas buffer if ready (for snapshot exports and filter processing)
+        if (video && video.readyState >= 2) {
+          try {
+            ctx.drawImage(video, drawX, drawY, drawW, drawH);
+          } catch (e) {
+            // Security or readyState transient error
+          }
+        }
 
         // For thermal camera hardware, apply false-color LWIR tint; for video files, preserve original pixels
         if (isCamera) {
@@ -272,10 +321,21 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
           ctx.fillRect(drawX, drawY, drawW, drawH);
           ctx.restore();
         }
+
+        // Layer 2: Transparent Technical Tactical Grid Overlay (48px spacing, non-obscuring)
+        ctx.strokeStyle = 'rgba(85, 217, 245, 0.035)';
+        ctx.lineWidth = 1;
+        const gridSize = 48;
+        for (let x = 0; x < width; x += gridSize) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+        }
+        for (let y = 0; y < height; y += gridSize) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+        }
       } else {
         drawAreaRef.current = { x: 0, y: 0, w: width, h: height };
 
-        // Synthetic / Demo Tactical Thermal Surface
+        // Synthetic / Demo Tactical Thermal Surface (shown only when NO video is selected)
         const gradient = ctx.createLinearGradient(0, 0, width, height);
         gradient.addColorStop(0, '#05080D');
         gradient.addColorStop(0.5, '#0B1018');
@@ -400,15 +460,32 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
         const cy = by + bh / 2;
 
         const detClass = (det.class || '').toLowerCase();
-        let rGba = '85, 217, 245';
+
+        // Threat coloring takes precedence when an active threat is flagged
+        let rGba = '85, 217, 245'; // default cyan
         let hexColor = '#55D9F5';
 
-        if (det.threat || detClass === 'vehicle') {
-          rGba = '242, 119, 134';
+        if (det.threat) {
+          rGba = '242, 119, 134'; // Threat Coral (#F27786)
           hexColor = '#F27786';
-        } else if (detClass === 'drone') {
-          rGba = '140, 155, 255';
-          hexColor = '#8C9BFF';
+        } else {
+          if (detClass === 'vehicle') {
+            rGba = '56, 189, 248'; // Sky Blue (#38BDF8)
+            hexColor = '#38BDF8';
+          } else if (detClass === 'animal') {
+            rGba = '34, 197, 94'; // Operational Green (#22C55E)
+            hexColor = '#22C55E';
+          } else if (detClass === 'drone') {
+            rGba = '140, 155, 255'; // Intelligence Violet (#8C9BFF)
+            hexColor = '#8C9BFF';
+          } else if (detClass.includes('bag')) {
+            rGba = '245, 158, 11'; // Warning Amber (#F59E0B)
+            hexColor = '#F59E0B';
+          } else {
+            // Person: Thermal Cyan
+            rGba = '85, 217, 245';
+            hexColor = '#55D9F5';
+          }
         }
 
         const finalAlpha = animState.opacity * (hasActiveHover && !isHovered ? 0.75 : 1.0);
@@ -416,8 +493,10 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
 
         // Position history for trajectory trail
         let history = historyMapRef.current.get(trackId) || [];
-        history.push({ x: cx, y: cy });
-        if (history.length > 12) history.shift();
+        const ncx = (animState.currentBbox[0] + animState.currentBbox[2]) / 2;
+        const ncy = (animState.currentBbox[1] + animState.currentBbox[3]) / 2;
+        history.push({ x: cx, y: cy, nx: ncx, ny: ncy });
+        if (history.length > 16) history.shift();
         historyMapRef.current.set(trackId, history);
 
         const isMoving = history.length > 2 && Math.hypot(history[history.length - 1].x - history[0].x, history[history.length - 1].y - history[0].y) > 4;
@@ -489,6 +568,193 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
         ctx.globalAlpha = 1.0;
       });
 
+      // 5. Dedicated Clean Surveillance Frame (Pure thermal video + YOLO11n AI overlays only, matching source video aspect ratio)
+      const renderCleanSurveillanceFrame = (
+        targetCtx: CanvasRenderingContext2D,
+        targetW: number,
+        targetH: number,
+        videoSource?: HTMLVideoElement | null
+      ) => {
+        targetCtx.clearRect(0, 0, targetW, targetH);
+
+        // STEP 1: Draw actual thermal video frame
+        if (videoSource && videoSource.readyState >= 2) {
+          try {
+            targetCtx.drawImage(videoSource, 0, 0, targetW, targetH);
+          } catch (e) {}
+        }
+
+        if (isCamera) {
+          targetCtx.save();
+          targetCtx.globalCompositeOperation = 'screen';
+          const thermalTint = targetCtx.createLinearGradient(0, 0, targetW, targetH);
+          thermalTint.addColorStop(0, 'rgba(10, 25, 45, 0.4)');
+          thermalTint.addColorStop(0.5, 'rgba(85, 217, 245, 0.15)');
+          thermalTint.addColorStop(1, 'rgba(140, 155, 255, 0.25)');
+          targetCtx.fillStyle = thermalTint;
+          targetCtx.fillRect(0, 0, targetW, targetH);
+          targetCtx.restore();
+        }
+
+        // STEP 2: Draw restricted-zone overlays (if part of existing surveillance visualization)
+        zones.forEach((zone) => {
+          if (!zone.enabled || !zone.polygon || zone.polygon.length < 3) return;
+
+          targetCtx.beginPath();
+          const firstPt = zone.polygon[0];
+          targetCtx.moveTo(firstPt[0] * targetW, firstPt[1] * targetH);
+
+          for (let i = 1; i < zone.polygon.length; i++) {
+            const pt = zone.polygon[i];
+            targetCtx.lineTo(pt[0] * targetW, pt[1] * targetH);
+          }
+          targetCtx.closePath();
+
+          targetCtx.fillStyle = 'rgba(242, 119, 134, 0.08)';
+          targetCtx.fill();
+          targetCtx.strokeStyle = 'rgba(242, 119, 134, 0.45)';
+          targetCtx.lineWidth = Math.max(1.5, Math.round(targetW * 0.002));
+          targetCtx.setLineDash([6, 6]);
+          targetCtx.stroke();
+          targetCtx.setLineDash([]);
+        });
+
+        // STEP 3: Draw tracking trails using existing ByteTrack movement history
+        detections.forEach((det) => {
+          const trackId = det.track_id;
+          const history = historyMapRef.current.get(trackId);
+          if (!history || history.length < 2) return;
+
+          const detClass = (det.class || '').toLowerCase();
+          let rGba = '85, 217, 245';
+          if (det.threat) rGba = '242, 119, 134';
+          else if (detClass === 'vehicle') rGba = '56, 189, 248';
+          else if (detClass === 'animal') rGba = '34, 197, 94';
+          else if (detClass === 'drone') rGba = '140, 155, 255';
+          else if (detClass.includes('bag')) rGba = '245, 158, 11';
+
+          // Trajectory path
+          targetCtx.beginPath();
+          targetCtx.moveTo(history[0].nx * targetW, history[0].ny * targetH);
+          for (let i = 1; i < history.length; i++) {
+            targetCtx.lineTo(history[i].nx * targetW, history[i].ny * targetH);
+          }
+          targetCtx.strokeStyle = `rgba(${rGba}, 0.5)`;
+          targetCtx.lineWidth = Math.max(1.5, Math.round(targetW * 0.003));
+          targetCtx.stroke();
+
+          // Progressive alpha fading points
+          for (let i = 0; i < history.length; i++) {
+            const opacity = ((i + 1) / history.length) * 0.65;
+            targetCtx.fillStyle = `rgba(${rGba}, ${opacity})`;
+            targetCtx.beginPath();
+            targetCtx.arc(history[i].nx * targetW, history[i].ny * targetH, Math.max(2, Math.round(targetW * 0.004)), 0, Math.PI * 2);
+            targetCtx.fill();
+          }
+        });
+
+        // STEPS 4 - 7: Bounding boxes, Class name, Confidence, Track ID, Threat label
+        detections.forEach((det) => {
+          const trackId = det.track_id;
+          const animState = targetStateMapRef.current.get(trackId);
+          const bbox = animState ? animState.currentBbox : det.bbox;
+
+          let [x1, y1, x2, y2] = bbox;
+          x1 = Math.max(0, Math.min(1, x1));
+          y1 = Math.max(0, Math.min(1, y1));
+          x2 = Math.max(0, Math.min(1, x2));
+          y2 = Math.max(0, Math.min(1, y2));
+
+          const bx = x1 * targetW;
+          const by = y1 * targetH;
+          const bw = (x2 - x1) * targetW;
+          const bh = (y2 - y1) * targetH;
+          const cx = bx + bw / 2;
+          const cy = by + bh / 2;
+
+          const detClass = (det.class || '').toLowerCase();
+          let rGba = '85, 217, 245';
+          let hexColor = '#55D9F5';
+          if (det.threat) {
+            rGba = '242, 119, 134';
+            hexColor = '#F27786';
+          } else if (detClass === 'vehicle') {
+            rGba = '56, 189, 248';
+            hexColor = '#38BDF8';
+          } else if (detClass === 'animal') {
+            rGba = '34, 197, 94';
+            hexColor = '#22C55E';
+          } else if (detClass === 'drone') {
+            rGba = '140, 155, 255';
+            hexColor = '#8C9BFF';
+          } else if (detClass.includes('bag')) {
+            rGba = '245, 158, 11';
+            hexColor = '#F59E0B';
+          }
+
+          // Target Heat Field Bloom
+          const heatRadius = Math.max(bw, bh) * 0.85;
+          const heatGrad = targetCtx.createRadialGradient(cx, cy, 0, cx, cy, heatRadius);
+          heatGrad.addColorStop(0, `rgba(${rGba}, ${det.threat ? 0.22 : 0.12})`);
+          heatGrad.addColorStop(1, `rgba(${rGba}, 0)`);
+          targetCtx.fillStyle = heatGrad;
+          targetCtx.fillRect(bx - 20, by - 20, bw + 40, bh + 40);
+
+          // STEP 4: Bounding Box Fill & Corner Accents
+          targetCtx.fillStyle = `rgba(${rGba}, ${det.threat ? 0.08 : 0.04})`;
+          targetCtx.fillRect(bx, by, bw, bh);
+
+          targetCtx.strokeStyle = `rgba(${rGba}, 0.95)`;
+          targetCtx.lineWidth = Math.max(1.5, Math.min(3.5, targetW * 0.003));
+
+          const cLen = Math.min(bw, bh) * 0.25;
+          targetCtx.beginPath(); targetCtx.moveTo(bx, by + cLen); targetCtx.lineTo(bx, by); targetCtx.lineTo(bx + cLen, by); targetCtx.stroke();
+          targetCtx.beginPath(); targetCtx.moveTo(bx + bw - cLen, by); targetCtx.lineTo(bx + bw, by); targetCtx.lineTo(bx + bw, by + cLen); targetCtx.stroke();
+          targetCtx.beginPath(); targetCtx.moveTo(bx, by + bh - cLen); targetCtx.lineTo(bx, by + bh); targetCtx.lineTo(bx + cLen, by + bh); targetCtx.stroke();
+          targetCtx.beginPath(); targetCtx.moveTo(bx + bw - cLen, by + bh); targetCtx.lineTo(bx + bw, by + bh); targetCtx.lineTo(bx + bw, by + bh - cLen); targetCtx.stroke();
+
+          // STEPS 5, 6, 7: Label Pill (Track ID + Class + Confidence + Threat Level/Status)
+          const confVal = animState ? animState.displayConf : (det.confidence || 0.85);
+          const confPercent = (confVal * 100).toFixed(1);
+          const threatBadge = det.threat ? `⚠ THREAT${det.threat_level ? ` [${det.threat_level}]` : ''}: ` : '';
+          const labelText = `${threatBadge}TRACK #${det.track_id}  ${(det.class || 'OBJECT').toUpperCase()}  ${confPercent}%`;
+
+          const fontSize = Math.max(11, Math.min(22, Math.round(targetW * 0.022)));
+          targetCtx.font = `600 ${fontSize}px "JetBrains Mono", monospace, sans-serif`;
+          const textMetrics = targetCtx.measureText(labelText);
+          const textW = textMetrics.width + 14;
+          const textH = fontSize + 8;
+
+          const labelX = bx;
+          const labelY = Math.max(by - textH - 3, 4);
+
+          targetCtx.fillStyle = det.threat ? 'rgba(32, 10, 16, 0.92)' : 'rgba(7, 10, 16, 0.88)';
+          targetCtx.strokeStyle = `rgba(${rGba}, ${det.threat ? 0.85 : 0.4})`;
+          targetCtx.lineWidth = 1;
+          targetCtx.beginPath();
+          targetCtx.roundRect(labelX, labelY, textW, textH, 4);
+          targetCtx.fill();
+          targetCtx.stroke();
+
+          targetCtx.fillStyle = det.threat ? '#F27786' : hexColor;
+          targetCtx.fillText(labelText, labelX + 6, labelY + fontSize * 0.85);
+        });
+      };
+
+      renderCleanSurveillanceFrameRef.current = renderCleanSurveillanceFrame;
+
+      const recCanvas = internalRecordingCanvasRef.current;
+      if (recCanvas && hasActiveVideo) {
+        if (recCanvas.width !== vW || recCanvas.height !== vH) {
+          recCanvas.width = vW;
+          recCanvas.height = vH;
+        }
+        const recCtx = recCanvas.getContext('2d');
+        if (recCtx) {
+          renderCleanSurveillanceFrame(recCtx, vW, vH, video);
+        }
+      }
+
       animFrameRef.current = requestAnimationFrame(renderLoop);
     };
 
@@ -499,7 +765,58 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, [detections, zones, width, height, sourceMode, isCameraConnected]);
+  }, [detections, zones, width, height, sourceMode, isCameraConnected, videoUrl]);
+
+  const hasActiveVideo = (sourceMode === 'video_file' && Boolean(videoUrl)) || (sourceMode === 'thermal_camera' && isCameraConnected);
+
+  // Synchronous, high-fidelity AI surveillance snapshot capture
+  const captureAISnapshot = useCallback((): string | null => {
+    const video = internalVideoRef.current || (videoRef ? videoRef.current : null);
+    const vW = (video && video.videoWidth > 0) ? video.videoWidth : 1280;
+    const vH = (video && video.videoHeight > 0) ? video.videoHeight : 720;
+
+    const isVideoFile = sourceMode === 'video_file' && Boolean(videoUrl);
+    const isCamera = sourceMode === 'thermal_camera' && isCameraConnected;
+    const activeVideoPresent = isVideoFile || isCamera;
+
+    if (activeVideoPresent && video && video.readyState >= 2) {
+      const snapCanvas = document.createElement('canvas');
+      snapCanvas.width = vW;
+      snapCanvas.height = vH;
+      const snapCtx = snapCanvas.getContext('2d');
+      if (snapCtx) {
+        if (renderCleanSurveillanceFrameRef.current) {
+          renderCleanSurveillanceFrameRef.current(snapCtx, vW, vH, video);
+        } else {
+          snapCtx.drawImage(video, 0, 0, vW, vH);
+        }
+        return snapCanvas.toDataURL('image/png');
+      }
+    }
+
+    // Fallback to recording canvas if ready
+    if (internalRecordingCanvasRef.current && activeVideoPresent) {
+      return internalRecordingCanvasRef.current.toDataURL('image/png');
+    }
+
+    // Fallback to viewport canvas (e.g. for synthetic demo mode)
+    if (canvasRef.current) {
+      return canvasRef.current.toDataURL('image/png');
+    }
+
+    return null;
+  }, [sourceMode, videoUrl, isCameraConnected, videoRef]);
+
+  useEffect(() => {
+    if (snapshotFnRef) {
+      snapshotFnRef.current = captureAISnapshot;
+    }
+    return () => {
+      if (snapshotFnRef) {
+        snapshotFnRef.current = null;
+      }
+    };
+  }, [captureAISnapshot, snapshotFnRef]);
 
   return (
     <div
@@ -509,23 +826,41 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
       }}
       className="relative rounded-2xl overflow-hidden border border-[var(--border-subtle)] bg-[#05080D] shadow-2xl group select-none"
     >
-      {/* Active Video element for Camera stream and Video File playback */}
+      {/* LAYER 1: Actual uploaded thermal video as base layer */}
       <video
         ref={internalVideoRef}
+        preload="auto"
         playsInline
         muted
         loop
         crossOrigin="anonymous"
-        className="absolute -top-[9999px] -left-[9999px] w-1 h-1 opacity-0 pointer-events-none"
+        className={`absolute inset-0 w-full h-full object-contain z-0 transition-opacity duration-300 ${
+          hasActiveVideo ? 'opacity-100 pointer-events-none' : 'opacity-0 pointer-events-none'
+        }`}
       />
 
+      {/* LAYER 2 - LAYER 7: Tactical Overlays, Zones, Bounding Boxes, HUD Canvas */}
       <canvas
         ref={canvasRef}
         width={width}
         height={height}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
-        className="w-full h-auto block cursor-crosshair"
+        className="relative z-10 w-full h-auto block cursor-crosshair"
+      />
+
+      {/* Clean Dedicated Recording Surface: 1:1 pixel match with source video, thermal frames + AI overlays only */}
+      <canvas
+        ref={internalRecordingCanvasRef}
+        style={{
+          position: 'fixed',
+          left: '-99999px',
+          top: '-99999px',
+          opacity: 0,
+          pointerEvents: 'none',
+          zIndex: -100,
+        }}
+        aria-hidden="true"
       />
 
       {/* Standby / Disconnected Camera Overlay */}
@@ -593,13 +928,13 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
           className={`w-2 h-2 rounded-full ${
             sourceMode === 'thermal_camera'
               ? isCameraConnected
-                ? 'bg-[var(--operational-green)] pulse-live shadow-[0_0_8px_var(--operational-green)]'
-                : 'bg-[var(--warning-amber)]'
-              : sourceMode === 'video_file'
-              ? Boolean(videoUrl)
                 ? 'bg-[var(--operational-green)] pulse-live'
                 : 'bg-[var(--warning-amber)]'
-              : 'bg-[var(--operational-green)] pulse-live'
+              : status === 'completed'
+              ? 'bg-[var(--operational-green)]'
+              : isPlaying || status === 'processing'
+              ? 'bg-[var(--operational-green)] pulse-live'
+              : 'bg-[var(--warning-amber)]'
           }`}
         />
         <span className="font-mono text-[10px] tracking-wide">
@@ -607,15 +942,15 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
             ? isCameraConnected
               ? 'LIVE THERMAL CAMERA • CAM-01 • Sector Alpha-4'
               : 'STANDBY • WAITING FOR CAMERA DEVICE'
-            : sourceMode === 'video_file'
-            ? Boolean(videoUrl)
-              ? isPlaying
-                ? 'VIDEO FILE SURVEILLANCE • ACTIVE'
-                : isPaused
-                ? 'VIDEO FILE PLAYBACK • PAUSED'
-                : 'VIDEO FILE LOADED • READY'
-              : 'VIDEO FILE SURVEILLANCE • NO VIDEO SELECTED'
-            : 'DEMO THERMAL FEED • SYNTHETIC TEST SIM'}
+            : status === 'completed'
+            ? 'VIDEO FILE SURVEILLANCE • COMPLETED'
+            : isPlaying || status === 'processing'
+            ? 'VIDEO FILE SURVEILLANCE • ACTIVE'
+            : isPaused || status === 'paused'
+            ? 'VIDEO FILE PLAYBACK • PAUSED'
+            : sourceMode === 'video_file' && Boolean(videoUrl) && status !== 'no_video_selected'
+            ? 'VIDEO FILE SURVEILLANCE • ACTIVE'
+            : 'THERMAL FEED • STANDBY'}
         </span>
       </div>
 
@@ -630,9 +965,9 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
                 ? isCameraConnected
                   ? 'LIVE SENSOR'
                   : 'STANDBY'
-                : sourceMode === 'video_file'
+                : sourceMode === 'video_file' && Boolean(videoUrl) && status !== 'no_video_selected'
                 ? 'FILE STREAM'
-                : 'DEMO MODE'}
+                : 'STANDBY'}
             </span>
           </span>
           <span className="text-white/20">│</span>
@@ -642,8 +977,8 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
           <span className="text-white/20">│</span>
           <span>
             STATUS:{' '}
-            <span className={isCameraConnected || sourceMode !== 'thermal_camera' ? 'text-[var(--operational-green)] font-semibold' : 'text-[var(--warning-amber)]'}>
-              {isCameraConnected || sourceMode !== 'thermal_camera' ? 'NOMINAL' : 'WAITING'}
+            <span className={isPlaying || status === 'processing' || status === 'completed' ? 'text-[var(--operational-green)] font-semibold' : 'text-[var(--warning-amber)]'}>
+              {isPlaying || status === 'processing' ? 'ACTIVE' : status === 'completed' ? 'COMPLETED' : 'STANDBY'}
             </span>
           </span>
         </div>

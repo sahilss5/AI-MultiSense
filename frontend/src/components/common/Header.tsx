@@ -11,13 +11,29 @@ interface HeaderProps {
   systemStatus: SystemStatusResponse | null;
   isConnected: boolean;
   onNavigateHome: () => void;
+  fps?: number;
+  activeTracks?: number;
+  activeThreats?: number;
+  isSessionActive?: boolean;
 }
 
-export const Header: React.FC<HeaderProps> = ({ systemStatus, isConnected, onNavigateHome }) => {
+export const Header: React.FC<HeaderProps> = ({
+  systemStatus,
+  isConnected,
+  onNavigateHome,
+  fps,
+  activeTracks,
+  activeThreats,
+  isSessionActive = false,
+}) => {
   const [istTime, setIstTime] = useState<string>('');
   const { theme, toggleTheme } = useTheme();
   const analysisMode = systemStatus?.analysis_mode || 'Demo Mode';
   const isDemo = systemStatus?.is_demo_mode ?? true;
+
+  const displayFps = fps !== undefined ? fps : (isSessionActive ? (systemStatus?.fps ?? 0.0) : 0.0);
+  const displayTracks = activeTracks !== undefined ? activeTracks : (isSessionActive ? (systemStatus?.active_tracks ?? 0) : 0);
+  const displayThreats = activeThreats !== undefined ? activeThreats : (isSessionActive ? (systemStatus?.active_threats ?? 0) : 0);
 
   useEffect(() => {
     const updateTime = () => {
@@ -60,20 +76,20 @@ export const Header: React.FC<HeaderProps> = ({ systemStatus, isConnected, onNav
         <div className="hidden md:flex items-center space-x-1.5 text-[var(--text-secondary)] font-mono text-[11px] shrink-0">
           <Activity className="w-3.5 h-3.5 text-[var(--thermal-cyan)]" />
           <span>FPS:</span>
-          <span className="text-[var(--text-primary)] font-semibold">{systemStatus?.fps?.toFixed(1) || '29.8'}</span>
+          <span className="text-[var(--text-primary)] font-semibold">{displayFps.toFixed(1)}</span>
         </div>
 
         <div className="hidden lg:flex items-center space-x-1.5 text-[var(--text-secondary)] font-mono text-[11px] shrink-0">
           <Crosshair className="w-3.5 h-3.5 text-[var(--operational-green)]" />
           <span>Tracks:</span>
-          <span className="text-[var(--text-primary)] font-semibold">{systemStatus?.active_tracks ?? 24}</span>
+          <span className="text-[var(--text-primary)] font-semibold">{displayTracks}</span>
         </div>
 
         <div className="hidden sm:flex items-center space-x-1.5 text-[var(--text-secondary)] font-mono text-[11px] shrink-0">
           <ShieldAlert className="w-3.5 h-3.5 text-[var(--threat-coral)]" />
           <span>Threats:</span>
-          <span className={`font-semibold ${(systemStatus?.active_threats || 0) > 0 ? 'text-[var(--threat-coral)]' : 'text-[var(--text-secondary)]'}`}>
-            {systemStatus?.active_threats ?? 3}
+          <span className={`font-semibold ${displayThreats > 0 ? 'text-[var(--threat-coral)]' : 'text-[var(--text-secondary)]'}`}>
+            {displayThreats}
           </span>
         </div>
 

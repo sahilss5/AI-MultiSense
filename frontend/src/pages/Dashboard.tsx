@@ -8,6 +8,7 @@ import { AnimatedNumber } from '../components/common/AnimatedNumber';
 import { ThermalCanvas } from '../components/live/ThermalCanvas';
 import { TacticalRadar3D } from '../components/3d/ThermalRadar3D';
 import { formatIST } from '../utils/date';
+import { apiService } from '../services/api';
 import {
   Cpu,
   ShieldAlert,
@@ -73,6 +74,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 }) => {
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
+  const [videoDims, setVideoDims] = useState<{ width: number; height: number }>({ width: 640, height: 512 });
 
   // Live IST Clock (updates every second)
   useEffect(() => {
@@ -84,24 +86,30 @@ export const Dashboard: React.FC<DashboardProps> = ({
     return () => clearInterval(interval);
   }, []);
 
-  const isDemo = systemStatus?.is_demo_mode ?? true;
-  const activeThreats = systemStatus?.active_threats ?? latestDetections.filter((d) => d.threat).length;
-  const activeTracks = systemStatus?.active_tracks ?? latestDetections.filter((d) => d.track_id != null).length;
-  const fps = systemStatus?.fps || (isDemo ? 29.8 : 0.0);
+  // Real video/session state derived from backend videoStatus
+  const isVideoRunning = videoStatus?.status === 'processing';
+  const isVideoPaused = videoStatus?.status === 'paused';
+  const isVideoCompleted = videoStatus?.status === 'completed';
+  const hasUploadedVideo = Boolean(videoStatus?.video_id && videoStatus.status !== 'no_video_selected');
+  const activeVideoUrl = hasUploadedVideo && videoStatus?.video_id
+    ? apiService.getVideoFileUrl(videoStatus.video_id)
+    : null;
+
+  // Real metrics — no fake demo counts
+  const activeTracks = isVideoRunning
+    ? (systemStatus?.active_tracks ?? latestDetections.filter((d) => d.track_id != null).length)
+    : 0;
+  const activeThreats = isVideoRunning
+    ? (systemStatus?.active_threats ?? latestDetections.filter((d) => d.threat).length)
+    : 0;
+  const fps = isVideoRunning ? (systemStatus?.fps ?? 0.0) : 0.0;
 
   const activeThreatObjects = latestDetections.filter((d) => d.threat);
   const highThreatsCount = activeThreatObjects.filter((t) => t.threat_level === 'HIGH' || t.threat_level === 'CRITICAL').length;
   const medThreatsCount = activeThreatObjects.filter((t) => t.threat_level === 'MEDIUM' || t.threat_level === 'LOW').length;
 
-  // Default target summary if live detections buffer is empty (used in demo mode only)
-  const defaultTargets = [
-    { track_id: 82, class: 'Drone', confidence: 0.991, speed: 28.5, threat: true, threat_level: 'HIGH' },
-    { track_id: 81, class: 'Person', confidence: 0.974, speed: 4.2, threat: false, threat_level: 'NORMAL' },
-    { track_id: 83, class: 'Animal', confidence: 0.912, speed: 12.0, threat: false, threat_level: 'NORMAL' },
-    { track_id: 84, class: 'Person With Bag', confidence: 0.932, speed: 3.8, threat: true, threat_level: 'HIGH' },
-  ];
-
-  const targetSummaryList = latestDetections.length > 0
+  // Target summary: only real detections when video is running, never fake defaults
+  const targetSummaryList = (isVideoRunning && latestDetections.length > 0)
     ? latestDetections.slice(0, 4).map((d) => ({
         track_id: d.track_id != null && d.track_id > 0 ? d.track_id : 1,
         class: (d.class || 'Target').replace(/_/g, ' '),
@@ -110,10 +118,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
         threat: !!d.threat,
         threat_level: d.threat_level || (d.threat ? 'HIGH' : 'NORMAL'),
       }))
-    : isDemo ? defaultTargets : [];
+    : [];
 
   // Active surveillance session determination
-  const isSessionActive = videoStatus?.status === 'processing' || videoStatus?.status === 'paused';
+  const isSessionActive = isVideoRunning || isVideoPaused;
 
   // Recent Activity displays ONLY events generated during the current surveillance session
   const timelineEvents = isSessionActive && currentSessionEvents ? currentSessionEvents : [];
@@ -243,8 +251,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <AnimatedNumber value={fps} decimals={1} /> <span className="text-sm font-normal text-[var(--text-secondary)]">FPS</span>
             </div>
             <div className="text-xs text-[var(--text-secondary)] font-sans truncate flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-[var(--operational-green)] pulse-live" />
-              <span>Thermal Video Stream • 640×512</span>
+              <span className={`w-2 h-2 rounded-full shrink-0 ${isVideoRunning ? 'bg-[var(--operational-green)] pulse-live' : isVideoCompleted ? 'bg-[var(--operational-green)]' : 'bg-[var(--warning-amber)]'}`} />
+              <span>{hasUploadedVideo ? `Thermal Video Stream • ${videoDims.width}×${videoDims.height}` : 'Thermal Feed • Standby'}</span>
             </div>
           </Card>
         </motion.div>
@@ -264,8 +272,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <div className="min-w-0">
                   <h2 className="text-xs font-bold text-[var(--text-primary)] font-sans tracking-wide uppercase flex items-center gap-2 truncate">
                     LIVE THERMAL SURVEILLANCE
-                    <span className="w-2 h-2 rounded-full bg-[var(--operational-green)] pulse-live shadow-[0_0_8px_var(--operational-green)] shrink-0" />
-                    <span className="text-[var(--operational-green)] text-[10px] font-mono font-semibold">● LIVE</span>
+                    <span className={`w-2 h-2 rounded-full shrink-0 shadow-[0_0_8px_var(--operational-green)] ${isVideoRunning ? 'bg-[var(--operational-green)] pulse-live' : isVideoCompleted ? 'bg-[var(--operational-green)]' : 'bg-[var(--warning-amber)]'}`} />
+                    <span className={`text-[10px] font-mono font-semibold ${isVideoRunning ? 'text-[var(--operational-green)]' : isVideoCompleted ? 'text-[var(--operational-green)]' : 'text-[var(--warning-amber)]'}`}>
+                      {isVideoRunning ? '● ACTIVE' : isVideoCompleted ? '● COMPLETED' : '○ STANDBY'}
+                    </span>
                   </h2>
                   <p className="text-[11px] text-[var(--text-secondary)] font-sans truncate">
                     CAM-01 • Sector Alpha-4 (FLIR AX65 Long-Wave Infrared / YOLO11n-Thermal)
@@ -299,9 +309,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="flex items-center space-x-3 truncate">
                 <span>SENSOR: <span className="text-[var(--thermal-cyan)] font-semibold">FLIR AX65</span></span>
                 <span>•</span>
-                <span>RES: <span className="text-[var(--text-primary)]">640×512 LWIR</span></span>
+                <span>RES: <span className="text-[var(--text-primary)]">{hasUploadedVideo ? `${videoDims.width}×${videoDims.height} LWIR` : 'STANDBY'}</span></span>
                 <span>•</span>
-                <span>INFERENCE: <span className="text-[var(--operational-green)] font-semibold">14.2ms FP16</span></span>
+                <span>INFERENCE: <span className={isVideoRunning ? 'text-[var(--operational-green)] font-semibold' : 'text-[var(--text-muted)]'}>{isVideoRunning ? '14.2ms FP16' : 'STANDBY'}</span></span>
               </div>
               <div className="flex items-center space-x-2">
                 <span>BUFFER: <span className="text-[var(--thermal-cyan)] font-semibold">{activeTracks} TRACKS</span></span>
@@ -311,10 +321,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
             {/* Thermal Stream Viewport Canvas */}
             <div className="w-full max-w-full overflow-hidden rounded-xl border border-[var(--border-subtle)]">
               <ThermalCanvas
-                detections={isPaused ? [] : latestDetections}
+                detections={isPaused || !isVideoRunning ? [] : latestDetections}
                 zones={[]}
                 width={800}
                 height={450}
+                sourceMode={hasUploadedVideo ? 'video_file' : 'demo_feed'}
+                videoUrl={activeVideoUrl}
+                isPlaying={isVideoRunning && !isPaused}
+                isPaused={isPaused || isVideoPaused}
+                status={videoStatus?.status}
+                onVideoDimensionsLoaded={(dims) => setVideoDims(dims)}
               />
             </div>
           </Card>
@@ -322,7 +338,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
         {/* RIGHT: 3D TACTICAL RADAR (~32% WIDTH, 4 COLS) */}
         <div className="lg:col-span-4 w-full max-w-full min-w-0">
-          <TacticalRadar3D detections={latestDetections} isDemo={isDemo} className="w-full shadow-lg" />
+          <TacticalRadar3D detections={latestDetections} isDemo={!isVideoRunning} className="w-full shadow-lg" />
         </div>
       </div>
 

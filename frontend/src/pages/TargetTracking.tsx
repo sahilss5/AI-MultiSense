@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { ThermalDetectionObject } from '../types/schema';
+import { ThermalDetectionObject, VideoStatusResponse, SessionSummary, SessionTrack } from '../types/schema';
 import { Card } from '../components/common/Card';
 import { Badge } from '../components/common/Badge';
 import { SeverityIndicator } from '../components/common/SeverityIndicator';
@@ -21,10 +21,17 @@ import {
   ArrowUpDown,
   AlertTriangle,
   ArrowUpRight,
+  Activity,
+  Layers,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface TargetTrackingProps {
   detections?: ThermalDetectionObject[];
+  isSessionActive?: boolean;
+  videoStatus?: VideoStatusResponse;
+  selectedTrackId?: number | null;
+  onSelectTrackId?: (trackId: number | null) => void;
 }
 
 export interface TargetItem {
@@ -47,23 +54,43 @@ export interface TargetItem {
   history: { time: string; text: string }[];
   posX: number;
   posY: number;
+  trajectory?: [number, number][];
 }
 
-export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] }) => {
+export const TargetTracking: React.FC<TargetTrackingProps> = ({
+  detections = [],
+  isSessionActive,
+  videoStatus,
+  selectedTrackId: propSelectedTrackId,
+  onSelectTrackId,
+}) => {
   const [filterClass, setFilterClass] = useState<string>('ALL');
   const [filterThreat, setFilterThreat] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortBy, setSortBy] = useState<'confidence' | 'speed' | 'threat'>('confidence');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
-  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
+  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(propSelectedTrackId ?? null);
+  const [userSelected, setUserSelected] = useState<boolean>(propSelectedTrackId != null);
   const [currentTimeStr, setCurrentTimeStr] = useState<string>('');
-  const [systemStatus, setSystemStatus] = useState<any>(null);
 
+  const [activeTargets, setActiveTargets] = useState<TargetItem[]>([]);
+  const activeTargetsMapRef = useRef<Map<number, TargetItem & { lastSeenMs: number }>>(new Map());
+  const sessionTargetsHistoryRef = useRef<Map<number, TargetItem>>(new Map());
+
+  // Session Summary state for post-video / completed session experience
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
+  const [isLoadingSummary, setIsLoadingSummary] = useState<boolean>(false);
+
+  const isCompletedSession = videoStatus?.status === 'completed';
+  const isSurveillanceActive = isSessionActive ?? (videoStatus?.status === 'processing' || videoStatus?.status === 'paused');
+
+  // Synchronize incoming selectedTrackId prop
   useEffect(() => {
-    apiService.getSystemStatus().then(setSystemStatus).catch(() => null);
-  }, []);
-
-  const isDemo = systemStatus?.is_demo_mode ?? false;
+    if (propSelectedTrackId != null) {
+      setSelectedTrackId(propSelectedTrackId);
+      setUserSelected(true);
+    }
+  }, [propSelectedTrackId]);
 
   // Live IST Clock
   useEffect(() => {
@@ -75,136 +102,254 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
     return () => clearInterval(interval);
   }, []);
 
-  // Demo fallback targets (strictly isolated to Demo Mode only)
-  const demoTargets: TargetItem[] = useMemo(() => [
-    {
-      track_id: 1,
-      trackCode: 'T-1',
-      class: 'Drone',
-      confidence: 0.924,
-      speed: null,
-      direction: 'NE',
-      duration_seconds: 42,
-      duration_formatted: '00:42',
-      zone: 'Sector Alpha-4',
-      status: 'ALERT',
-      threat: true,
-      threat_level: 'HIGH',
-      threat_reason: 'Unauthorized drone detected',
-      bbox: [0.54, 0.20, 0.77, 0.48],
-      first_detected: 'N/A',
-      last_seen: currentTimeStr || '18:02:49',
-      posX: 0.28,
-      posY: -0.32,
-      history: [
-        { time: currentTimeStr || '18:02:40', text: 'Thermal signature acquired in Sector Alpha-4' },
-        { time: currentTimeStr || '18:02:49', text: 'Unauthorized drone detected' },
-      ],
-    },
-    {
-      track_id: 2,
-      trackCode: 'T-2',
-      class: 'Person',
-      confidence: 0.974,
-      speed: null,
-      direction: 'NW',
-      duration_seconds: 68,
-      duration_formatted: '01:08',
-      zone: 'Perimeter Approach Alpha',
-      status: 'TRACKING',
-      threat: false,
-      threat_level: 'LOW',
-      bbox: [0.24, 0.32, 0.49, 0.68],
-      first_detected: 'N/A',
-      last_seen: currentTimeStr || '18:02:49',
-      posX: -0.42,
-      posY: -0.18,
-      history: [
-        { time: currentTimeStr || '18:02:30', text: 'ByteTrack target acquired' },
-        { time: currentTimeStr || '18:02:49', text: 'Routine thermal tracking' },
-      ],
-    },
-    {
-      track_id: 3,
-      trackCode: 'T-3',
-      class: 'Vehicle',
-      confidence: 0.942,
-      speed: null,
-      direction: 'E',
-      duration_seconds: 24,
-      duration_formatted: '00:24',
-      zone: 'Access Road',
-      status: 'TRACKING',
-      threat: false,
-      threat_level: 'LOW',
-      bbox: [0.63, 0.54, 0.90, 0.86],
-      first_detected: 'N/A',
-      last_seen: currentTimeStr || '18:02:49',
-      posX: 0.44,
-      posY: 0.62,
-      history: [
-        { time: currentTimeStr || '18:02:35', text: 'Vehicle thermal signature tracked' },
-      ],
-    },
-  ], [currentTimeStr]);
+  // Fetch session summary when video completes
+  useEffect(() => {
+    if (isCompletedSession) {
+      setIsLoadingSummary(true);
+      apiService
+        .getSessionSummary(videoStatus?.video_id || undefined)
+        .then((summary) => {
+          setSessionSummary(summary);
+          // Auto-select first threat or first track if not selected
+          if (!selectedTrackId && summary?.tracks && summary.tracks.length > 0) {
+            const firstThreat = summary.tracks.find((t) => t.threat);
+            const defaultTrack = firstThreat || summary.tracks[0];
+            setSelectedTrackId(defaultTrack.track_id);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load session summary for completed video:', err);
+        })
+        .finally(() => {
+          setIsLoadingSummary(false);
+        });
+    } else if (videoStatus?.status === 'processing' || videoStatus?.status === 'no_video_selected') {
+      setSessionSummary(null);
+    }
+  }, [isCompletedSession, videoStatus?.video_id, videoStatus?.status]);
 
-  // Merge live detections if available; strictly empty if no video playing
-  const allTargets: TargetItem[] = useMemo(() => {
-    if (detections.length === 0) return isDemo ? demoTargets : [];
+  // Load recorded session threats from backend so past threats remain inspectable
+  useEffect(() => {
+    apiService
+      .getSessionThreats()
+      .then((sessionThreats) => {
+        if (sessionThreats && Array.isArray(sessionThreats)) {
+          sessionThreats.forEach((st: any) => {
+            const tid = st.track_id || 1;
+            const timeStr = st.timestamp ? formatIST(st.timestamp, { includeTimeOnly: true }) : formatIST(new Date(), { includeTimeOnly: true });
+            const className = (st.class || st.object_class || 'Target').replace(/_/g, ' ');
+            const durSec = st.duration_seconds || 0;
+            const m = Math.floor(durSec / 60).toString().padStart(2, '0');
+            const s = (durSec % 60).toString().padStart(2, '0');
+            sessionTargetsHistoryRef.current.set(tid, {
+              track_id: tid,
+              trackCode: `T-${tid}`,
+              class: className,
+              confidence: st.confidence ?? 0.92,
+              speed: st.speed || null,
+              direction: st.direction || 'STATIONARY',
+              duration_seconds: durSec,
+              duration_formatted: `${m}:${s}`,
+              zone: st.zone || 'N/A',
+              status: 'ALERT',
+              threat: true,
+              threat_level: (st.threat_level as any) || 'HIGH',
+              threat_reason: st.threat_reason,
+              bbox: st.bbox || [0.35, 0.35, 0.65, 0.65],
+              first_detected: timeStr,
+              last_seen: timeStr,
+              posX: 0,
+              posY: 0,
+              history: [{ time: timeStr, text: st.threat_reason || 'Threat detected by Threat Engine' }],
+              trajectory: st.trajectory || [],
+            });
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load session threats for target tracking:', err);
+      });
 
-    return detections.map((d, index) => {
-      const tid = d.track_id != null && d.track_id > 0 ? d.track_id : index + 1;
-      const cx = (d.bbox[0] + d.bbox[2]) / 2;
-      const cy = (d.bbox[1] + d.bbox[3]) / 2;
-      const normX = Math.max(-0.9, Math.min(0.9, (cx - 0.5) * 1.6));
-      const normY = Math.max(-0.9, Math.min(0.9, (cy - 0.5) * 1.6));
+    apiService
+      .getAlertHistory({ video_id: videoStatus?.video_id || undefined, limit: 50 })
+      .then((alerts) => {
+        if (alerts && Array.isArray(alerts)) {
+          alerts.forEach((a) => {
+            const tid = a.track_id != null && a.track_id > 0 ? a.track_id : null;
+            if (!tid) return;
+            if (!sessionTargetsHistoryRef.current.has(tid)) {
+              const timeStr = formatIST(a.timestamp, { includeTimeOnly: true });
+              const className = (a.object_class || 'Target').replace(/_/g, ' ');
+              sessionTargetsHistoryRef.current.set(tid, {
+                track_id: tid,
+                trackCode: `T-${tid}`,
+                class: className,
+                confidence: a.confidence ?? 0.92,
+                speed: a.speed || null,
+                direction: 'STATIONARY',
+                duration_seconds: 15,
+                duration_formatted: '00:15',
+                zone: a.zone || 'N/A',
+                status: 'ALERT',
+                threat: true,
+                threat_level: (a.severity as any) || 'HIGH',
+                threat_reason: a.reason,
+                bbox: [0.35, 0.35, 0.65, 0.65],
+                first_detected: timeStr,
+                last_seen: timeStr,
+                posX: 0,
+                posY: 0,
+                history: [{ time: timeStr, text: a.reason }],
+                trajectory: [],
+              });
+            }
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load alert history for target tracking:', err);
+      });
+  }, [videoStatus?.video_id, videoStatus?.status]);
 
-      const durSec = d.duration_seconds || 0;
-      const m = Math.floor(durSec / 60).toString().padStart(2, '0');
-      const s = (durSec % 60).toString().padStart(2, '0');
+  // Synchronize live ByteTrack detections into active targets map
+  useEffect(() => {
+    if (!isSurveillanceActive) {
+      activeTargetsMapRef.current.clear();
+      setActiveTargets([]);
+      return;
+    }
 
-      return {
-        track_id: tid,
-        trackCode: `T-${tid}`,
-        class: (d.class || 'Person').replace(/_/g, ' '),
-        confidence: d.confidence || 0.92,
-        speed: d.speed && d.speed > 0 ? (d.speed > 20 ? d.speed : d.speed * 3.6) : null,
-        direction: d.direction || 'N/A',
-        duration_seconds: durSec,
-        duration_formatted: `${m}:${s}`,
-        zone: d.zone || 'Sector Alpha-4',
-        status: d.threat ? 'ALERT' : 'TRACKING',
-        threat: !!d.threat,
-        threat_level: d.threat_level || (d.threat ? 'HIGH' : 'LOW'),
-        threat_reason: d.threat_reason || (d.threat ? 'Unauthorized target detected' : null),
-        bbox: d.bbox,
-        first_detected: 'N/A',
-        last_seen: formatIST(new Date(), { includeTimeOnly: true }),
-        posX: normX,
-        posY: normY,
-        history: [
-          {
-            time: formatIST(new Date(), { includeTimeOnly: true }),
-            text: d.threat
-              ? (d.threat_reason || 'Threat detected by Threat Engine')
-              : `Active ByteTrack tracking in ${d.zone || 'Sector Alpha-4'}`,
-          },
-        ],
-      };
-    });
-  }, [detections, isDemo, demoTargets]);
+    const now = Date.now();
+    const map = activeTargetsMapRef.current;
+    const timeStr = formatIST(new Date(), { includeTimeOnly: true });
 
-  // Class Counts for Top Summary Cards from REAL tracking data
-  const countTotal = allTargets.length;
-  const countPerson = allTargets.filter((t) => t.class.toUpperCase() === 'PERSON').length;
-  const countVehicle = allTargets.filter((t) => t.class.toUpperCase() === 'VEHICLE').length;
-  const countAnimal = allTargets.filter((t) => t.class.toUpperCase() === 'ANIMAL').length;
-  const countDrone = allTargets.filter((t) => t.class.toUpperCase() === 'DRONE').length;
-  const countBag = allTargets.filter((t) => t.class.toUpperCase().includes('BAG')).length;
+    if (detections && detections.length > 0) {
+      detections.forEach((d) => {
+        const tid = d.track_id != null && d.track_id > 0 ? d.track_id : null;
+        if (!tid) return;
+        const cx = (d.bbox[0] + d.bbox[2]) / 2;
+        const cy = (d.bbox[1] + d.bbox[3]) / 2;
+        const normX = Math.max(-0.9, Math.min(0.9, (cx - 0.5) * 1.6));
+        const normY = Math.max(-0.9, Math.min(0.9, (cy - 0.5) * 1.6));
 
-  // Filter & Search Logic
-  const filteredTargets = useMemo(() => {
-    return allTargets
+        const durSec = d.duration_seconds || 0;
+        const m = Math.floor(durSec / 60).toString().padStart(2, '0');
+        const s = (durSec % 60).toString().padStart(2, '0');
+
+        const className = (d.class || 'Person').replace(/_/g, ' ');
+        const isThreat = !!d.threat;
+        const threatLevel = d.threat_level || (isThreat ? 'HIGH' : 'LOW');
+        const threatReason = d.threat_reason || (isThreat ? 'Unauthorized target detected' : null);
+
+        const existing = map.get(tid);
+        if (existing) {
+          existing.confidence = d.confidence ?? existing.confidence;
+          existing.class = className;
+          existing.bbox = d.bbox;
+          existing.posX = normX;
+          existing.posY = normY;
+          existing.status = isThreat ? 'ALERT' : 'TRACKING';
+          existing.threat = isThreat;
+          existing.threat_level = threatLevel;
+          existing.threat_reason = threatReason;
+          if (d.zone) existing.zone = d.zone;
+          existing.speed = d.speed && d.speed > 0 ? (d.speed > 20 ? d.speed : d.speed * 3.6) : null;
+          existing.direction = d.direction || 'N/A';
+          existing.duration_seconds = durSec || existing.duration_seconds;
+          existing.duration_formatted = `${m}:${s}`;
+          existing.last_seen = timeStr;
+          existing.lastSeenMs = now;
+          if (d.trajectory && d.trajectory.length > 0) {
+            existing.trajectory = d.trajectory;
+          }
+
+          if (isThreat && (!existing.history.length || existing.history[0]?.text !== threatReason)) {
+            existing.history = [
+              { time: timeStr, text: threatReason || 'Threat detected by Threat Engine' },
+              ...existing.history.slice(0, 19),
+            ];
+          }
+          sessionTargetsHistoryRef.current.set(tid, existing);
+        } else {
+          const newItem: TargetItem & { lastSeenMs: number } = {
+            track_id: tid,
+            trackCode: `T-${tid}`,
+            class: className,
+            confidence: d.confidence ?? 0.92,
+            speed: d.speed && d.speed > 0 ? (d.speed > 20 ? d.speed : d.speed * 3.6) : null,
+            direction: d.direction || 'N/A',
+            duration_seconds: durSec,
+            duration_formatted: `${m}:${s}`,
+            zone: d.zone || 'N/A',
+            status: isThreat ? 'ALERT' : 'TRACKING',
+            threat: isThreat,
+            threat_level: threatLevel,
+            threat_reason: threatReason,
+            bbox: d.bbox,
+            first_detected: timeStr,
+            last_seen: timeStr,
+            posX: normX,
+            posY: normY,
+            lastSeenMs: now,
+            trajectory: d.trajectory || [[cx, cy]],
+            history: [
+              {
+                time: timeStr,
+                text: isThreat
+                  ? (threatReason || 'Threat detected by Threat Engine')
+                  : `Active ByteTrack tracking acquired${d.zone ? ` in ${d.zone}` : ''}`,
+              },
+            ],
+          };
+          map.set(tid, newItem);
+          sessionTargetsHistoryRef.current.set(tid, newItem);
+        }
+      });
+    }
+
+    // Prune tracks expired beyond ByteTrack expiration window (2.5s)
+    const EXPIRATION_MS = 2500;
+    for (const [tid, item] of map.entries()) {
+      if (now - item.lastSeenMs > EXPIRATION_MS) {
+        map.delete(tid);
+      }
+    }
+
+    setActiveTargets(Array.from(map.values()));
+  }, [detections, isSurveillanceActive]);
+
+  // Periodic expiration cleanup timer when surveillance is active
+  useEffect(() => {
+    if (!isSurveillanceActive) return;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const map = activeTargetsMapRef.current;
+      let hasDeletions = false;
+      const EXPIRATION_MS = 2500;
+      for (const [tid, item] of map.entries()) {
+        if (now - item.lastSeenMs > EXPIRATION_MS) {
+          map.delete(tid);
+          hasDeletions = true;
+        }
+      }
+      if (hasDeletions) {
+        setActiveTargets(Array.from(map.values()));
+      }
+    }, 400);
+    return () => clearInterval(interval);
+  }, [isSurveillanceActive]);
+
+  // Live Class Counts for Top Summary Cards from REAL active tracking data
+  const countTotal = activeTargets.length;
+  const countPerson = activeTargets.filter((t) => t.class.toUpperCase() === 'PERSON').length;
+  const countVehicle = activeTargets.filter((t) => t.class.toUpperCase() === 'VEHICLE').length;
+  const countAnimal = activeTargets.filter((t) => t.class.toUpperCase() === 'ANIMAL').length;
+  const countDrone = activeTargets.filter((t) => t.class.toUpperCase() === 'DRONE').length;
+  const countBag = activeTargets.filter((t) => t.class.toUpperCase().includes('BAG')).length;
+
+  // Filter & Search Logic for Live Targets
+  const filteredLiveTargets = useMemo(() => {
+    return activeTargets
       .filter((t) => {
         // Class filter
         if (filterClass !== 'ALL') {
@@ -238,17 +383,111 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
         }
         return sortAsc ? -diff : diff;
       });
-  }, [allTargets, filterClass, filterThreat, searchQuery, sortBy, sortAsc]);
+  }, [activeTargets, filterClass, filterThreat, searchQuery, sortBy, sortAsc]);
 
-  // Selected Target: strictly null if no targets exist
-  const selectedTarget = useMemo(() => {
-    if (allTargets.length === 0) return null;
-    if (selectedTrackId != null) {
-      const found = allTargets.find((t) => t.track_id === selectedTrackId);
-      if (found) return found;
+  // Filter & Search Logic for Completed Session Tracks
+  const sessionTracks = useMemo(() => {
+    return sessionSummary?.tracks || [];
+  }, [sessionSummary]);
+
+  const filteredSessionTracks = useMemo(() => {
+    if (!sessionTracks.length) return [];
+    return sessionTracks
+      .filter((t) => {
+        // Class filter
+        if (filterClass !== 'ALL') {
+          const normFilter = filterClass.toUpperCase().replace(/\s+/g, '_');
+          const normClass = t.class_name.toUpperCase().replace(/\s+/g, '_');
+          if (normFilter !== normClass) return false;
+        }
+
+        // Threat filter
+        if (filterThreat === 'THREAT_ONLY' && !t.threat) return false;
+        if (filterThreat === 'NORMAL_ONLY' && t.threat) return false;
+
+        // Search query
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase().trim();
+          const matchId = `t-${t.track_id}`.includes(q) || t.track_id.toString().includes(q);
+          const matchClass = t.class_name.toLowerCase().includes(q);
+          const matchZone = (t.zone || '').toLowerCase().includes(q);
+          if (!matchId && !matchClass && !matchZone) return false;
+        }
+
+        return true;
+      })
+      .sort((a, b) => {
+        let diff = 0;
+        if (sortBy === 'confidence') diff = b.average_confidence - a.average_confidence;
+        else if (sortBy === 'speed') diff = (b.speed || 0) - (a.speed || 0);
+        else if (sortBy === 'threat') {
+          const rank: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
+          diff = (rank[b.threat_level] || 1) - (rank[a.threat_level] || 1);
+        }
+        return sortAsc ? -diff : diff;
+      });
+  }, [sessionTracks, filterClass, filterThreat, searchQuery, sortBy, sortAsc]);
+
+  // Selected Session Track in Completed mode
+  const selectedSessionTrack = useMemo<SessionTrack | null>(() => {
+    if (!sessionTracks.length) return null;
+    const effectiveTid = selectedTrackId ?? propSelectedTrackId;
+    if (effectiveTid != null) {
+      const match = sessionTracks.find((t) => t.track_id === effectiveTid);
+      if (match) return match;
     }
-    return filteredTargets[0] || allTargets[0] || null;
-  }, [allTargets, filteredTargets, selectedTrackId]);
+    return filteredSessionTracks[0] || sessionTracks.find((t) => t.threat) || sessionTracks[0] || null;
+  }, [sessionTracks, filteredSessionTracks, selectedTrackId, propSelectedTrackId]);
+
+  // Selected Target in Live mode
+  const selectedLiveTarget = useMemo(() => {
+    const effectiveTid = selectedTrackId ?? propSelectedTrackId;
+    if (effectiveTid != null) {
+      const activeFound = activeTargets.find((t) => t.track_id === effectiveTid);
+      if (activeFound) return activeFound;
+      const historyFound = sessionTargetsHistoryRef.current.get(effectiveTid);
+      if (historyFound) return historyFound;
+    }
+    if (activeTargets.length > 0) {
+      return filteredLiveTargets[0] || activeTargets[0] || null;
+    }
+    if (effectiveTid != null) {
+      return sessionTargetsHistoryRef.current.get(effectiveTid) || null;
+    }
+    return null;
+  }, [activeTargets, filteredLiveTargets, selectedTrackId, propSelectedTrackId]);
+
+  const isTargetActive = useMemo(() => {
+    if (!selectedLiveTarget) return false;
+    return activeTargets.some((t) => t.track_id === selectedLiveTarget.track_id);
+  }, [activeTargets, selectedLiveTarget]);
+
+  // Target object formatted for TargetTrajectory3D
+  const trajectoryTargetFor3D = useMemo(() => {
+    if (isCompletedSession && selectedSessionTrack) {
+      const realTrajectory: [number, number][] =
+        selectedSessionTrack.trajectory && selectedSessionTrack.trajectory.length > 0
+          ? selectedSessionTrack.trajectory
+          : selectedSessionTrack.movement_points && selectedSessionTrack.movement_points.length > 0
+          ? selectedSessionTrack.movement_points.map((p) => [p.x, p.y] as [number, number])
+          : selectedSessionTrack.last_position
+          ? [[selectedSessionTrack.last_position.x, selectedSessionTrack.last_position.y]]
+          : [];
+
+      return {
+        track_id: selectedSessionTrack.track_id,
+        class: selectedSessionTrack.class_name,
+        confidence: selectedSessionTrack.average_confidence,
+        speed: selectedSessionTrack.speed,
+        direction: selectedSessionTrack.direction || 'STATIONARY',
+        threat: selectedSessionTrack.threat,
+        threat_level: selectedSessionTrack.threat_level,
+        zone: selectedSessionTrack.zone || 'N/A',
+        trajectory: realTrajectory,
+      };
+    }
+    return selectedLiveTarget;
+  }, [isCompletedSession, selectedSessionTrack, selectedLiveTarget]);
 
   const getClassIcon = (cls: string) => {
     const norm = (cls || '').toUpperCase();
@@ -259,8 +498,10 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
     return <User className="w-3.5 h-3.5 text-[var(--thermal-cyan)]" />;
   };
 
-  const handleSelectTarget = (trackId: number) => {
+  const handleSelectTrack = (trackId: number) => {
     setSelectedTrackId(trackId);
+    setUserSelected(true);
+    onSelectTrackId?.(trackId);
   };
 
   return (
@@ -282,33 +523,48 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
             </h1>
 
             {/* Tracking Status Badge */}
-            <div className="flex items-center space-x-2 bg-[#08121E] px-3.5 py-1 rounded-full border border-[var(--border-subtle)] text-xs font-mono">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  countTotal > 0
-                    ? 'bg-[var(--operational-green)] pulse-live shadow-[0_0_8px_var(--operational-green)]'
-                    : 'bg-[var(--text-muted)]'
-                }`}
-              />
-              <span
-                className={`font-semibold tracking-wide ${
-                  countTotal > 0 ? 'text-[var(--operational-green)]' : 'text-[var(--text-muted)]'
-                }`}
-              >
-                {countTotal > 0 ? 'TRACKING ACTIVE' : 'IDLE / WAITING'}
-              </span>
-            </div>
+            {isCompletedSession ? (
+              <div className="flex items-center space-x-2 bg-[#081814] px-3.5 py-1 rounded-full border border-emerald-500/30 text-xs font-mono">
+                <span className="w-2 h-2 rounded-full bg-[var(--operational-green)] pulse-live shadow-[0_0_8px_var(--operational-green)]" />
+                <span className="font-semibold tracking-wide text-[var(--operational-green)]">
+                  SESSION COMPLETE
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center space-x-2 bg-[#08121E] px-3.5 py-1 rounded-full border border-[var(--border-subtle)] text-xs font-mono">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    countTotal > 0
+                      ? 'bg-[var(--operational-green)] pulse-live shadow-[0_0_8px_var(--operational-green)]'
+                      : 'bg-[var(--text-muted)]'
+                  }`}
+                />
+                <span
+                  className={`font-semibold tracking-wide ${
+                    countTotal > 0 ? 'text-[var(--operational-green)]' : 'text-[var(--text-muted)]'
+                  }`}
+                >
+                  {countTotal > 0 ? 'TRACKING ACTIVE' : 'IDLE / WAITING'}
+                </span>
+              </div>
+            )}
           </div>
           <p className="text-xs text-[var(--text-secondary)] font-sans mt-0.5 truncate">
-            Real-time object tracking and target movement visualization
+            {isCompletedSession
+              ? 'Completed video session track history & forensic movement trajectory'
+              : 'Real-time object tracking and target movement visualization'}
           </p>
         </div>
 
         <div className="flex items-center space-x-3 shrink-0 flex-wrap gap-2">
-          {/* Active Tracks Count */}
+          {/* Tracks Count Badge */}
           <div className="flex items-center space-x-2 bg-[var(--bg-surface-secondary)] px-3.5 py-1.5 rounded-full border border-[var(--border-subtle)] text-xs font-mono text-[var(--thermal-cyan)]">
-            <span className="text-[var(--text-muted)]">ACTIVE TRACKS:</span>
-            <span className="font-bold">{countTotal}</span>
+            <span className="text-[var(--text-muted)]">
+              {isCompletedSession ? 'RECORDED TRACKS:' : 'ACTIVE TRACKS:'}
+            </span>
+            <span className="font-bold">
+              {isCompletedSession ? (sessionSummary?.unique_tracks ?? 0) : countTotal}
+            </span>
           </div>
 
           {/* Live IST Clock */}
@@ -320,66 +576,218 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
       </div>
 
       {/* ======================================================== */}
-      {/* 2. TOP SUMMARY CARDS                                     */}
+      {/* 2. TOP METRICS GRIDS                                     */}
       {/* ======================================================== */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 w-full max-w-full min-w-0">
-        {/* ACTIVE TRACKS */}
-        <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
-          <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">ACTIVE TRACKS</div>
-          <div className="text-2xl font-extrabold font-mono text-[var(--text-primary)]">{countTotal}</div>
-          <div className="text-[10px] text-[var(--thermal-cyan)] font-sans">ByteTrack</div>
-        </Card>
+      {isCompletedSession ? (
+        /* --- SESSION COMPLETE SUMMARY VIEW --- */
+        <div className="space-y-4">
+          {/* A. 7-Card Session Summary Metrics Grid */}
+          <div className="space-y-2">
+            <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-[var(--thermal-cyan)]" />
+              <span>SESSION SUMMARY</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 w-full max-w-full min-w-0">
+              {/* 1. Total Detections */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">TOTAL DETECTIONS</div>
+                <div className="text-xl sm:text-2xl font-extrabold font-mono text-[var(--thermal-cyan)]">
+                  {sessionSummary?.total_detections ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Frame-level Detections</div>
+              </Card>
 
-        {/* PERSON */}
-        <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
-          <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
-            <span>PERSON</span>
-            <User className="w-3 h-3 text-[var(--thermal-cyan)]" />
-          </div>
-          <div className="text-2xl font-extrabold font-mono text-[var(--thermal-cyan)]">{countPerson}</div>
-          <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
-        </Card>
+              {/* 2. Unique Tracks */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">UNIQUE TRACKS</div>
+                <div className="text-xl sm:text-2xl font-extrabold font-mono text-[var(--text-primary)]">
+                  {sessionSummary?.unique_tracks ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">ByteTrack IDs</div>
+              </Card>
 
-        {/* VEHICLE */}
-        <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
-          <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
-            <span>VEHICLE</span>
-            <Car className="w-3 h-3 text-[var(--warning-amber)]" />
-          </div>
-          <div className="text-2xl font-extrabold font-mono text-[var(--warning-amber)]">{countVehicle}</div>
-          <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
-        </Card>
+              {/* 3. Threats */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+                  <span>THREATS</span>
+                  <AlertTriangle className="w-3 h-3 text-[var(--threat-coral)]" />
+                </div>
+                <div className="text-xl sm:text-2xl font-extrabold font-mono text-[var(--threat-coral)]">
+                  {sessionSummary?.total_threats ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Threat Incidents</div>
+              </Card>
 
-        {/* ANIMAL */}
-        <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
-          <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
-            <span>ANIMAL</span>
-            <Bird className="w-3 h-3 text-[var(--operational-green)]" />
-          </div>
-          <div className="text-2xl font-extrabold font-mono text-[var(--operational-green)]">{countAnimal}</div>
-          <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
-        </Card>
+              {/* 4. High Threats */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">HIGH THREATS</div>
+                <div className="text-xl sm:text-2xl font-extrabold font-mono text-[var(--threat-coral)]">
+                  {sessionSummary?.high_threats ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">High Severity</div>
+              </Card>
 
-        {/* DRONE */}
-        <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
-          <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
-            <span>DRONE</span>
-            <Plane className="w-3 h-3 text-[var(--intelligence-violet)]" />
-          </div>
-          <div className="text-2xl font-extrabold font-mono text-[var(--intelligence-violet)]">{countDrone}</div>
-          <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
-        </Card>
+              {/* 5. Frames Processed */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">FRAMES</div>
+                <div className="text-xl sm:text-2xl font-extrabold font-mono text-[var(--operational-green)]">
+                  {sessionSummary?.frames_processed ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">
+                  / {sessionSummary?.total_video_frames ?? sessionSummary?.frames_processed ?? 0} (100%)
+                </div>
+              </Card>
 
-        {/* PERSON WITH BAG */}
-        <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
-          <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
-            <span>PERSON WITH BAG</span>
-            <Briefcase className="w-3 h-3 text-[var(--threat-coral)]" />
+              {/* 6. Average Confidence */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">AVG CONFIDENCE</div>
+                <div className="text-xl sm:text-2xl font-extrabold font-mono text-[var(--operational-green)]">
+                  {sessionSummary ? `${(sessionSummary.average_confidence * 100).toFixed(1)}%` : '0.0%'}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">YOLO11n Mean</div>
+              </Card>
+
+              {/* 7. Video Duration */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">DURATION</div>
+                <div className="text-xl sm:text-2xl font-extrabold font-mono text-[var(--intelligence-violet)]">
+                  {sessionSummary ? `${sessionSummary.video_duration.toFixed(1)}s` : '0.0s'}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Analyzed Runtime</div>
+              </Card>
+            </div>
           </div>
-          <div className="text-2xl font-extrabold font-mono text-[var(--threat-coral)]">{countBag}</div>
-          <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
-        </Card>
-      </div>
+
+          {/* B. 5-Card Dynamic Class Summary Cards */}
+          <div className="space-y-2">
+            <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)] flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-[var(--thermal-cyan)]" />
+              <span>DYNAMIC CLASS SUMMARY (UNIQUE TRACKS)</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 w-full max-w-full min-w-0">
+              {/* PERSON */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+                  <span>PERSON</span>
+                  <User className="w-3 h-3 text-[var(--thermal-cyan)]" />
+                </div>
+                <div className="text-2xl font-extrabold font-mono text-[var(--thermal-cyan)]">
+                  {sessionSummary?.class_counts?.Person ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Unique Tracks</div>
+              </Card>
+
+              {/* VEHICLE */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+                  <span>VEHICLE</span>
+                  <Car className="w-3 h-3 text-[var(--warning-amber)]" />
+                </div>
+                <div className="text-2xl font-extrabold font-mono text-[var(--warning-amber)]">
+                  {sessionSummary?.class_counts?.Vehicle ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Unique Tracks</div>
+              </Card>
+
+              {/* ANIMAL */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+                  <span>ANIMAL</span>
+                  <Bird className="w-3 h-3 text-[var(--operational-green)]" />
+                </div>
+                <div className="text-2xl font-extrabold font-mono text-[var(--operational-green)]">
+                  {sessionSummary?.class_counts?.Animal ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Unique Tracks</div>
+              </Card>
+
+              {/* DRONE */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+                  <span>DRONE</span>
+                  <Plane className="w-3 h-3 text-[var(--intelligence-violet)]" />
+                </div>
+                <div className="text-2xl font-extrabold font-mono text-[var(--intelligence-violet)]">
+                  {sessionSummary?.class_counts?.Drone ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Unique Tracks</div>
+              </Card>
+
+              {/* PERSON WITH BAG */}
+              <Card hoverEffect className="p-3 space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+                <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+                  <span>PERSON WITH BAG</span>
+                  <Briefcase className="w-3 h-3 text-[var(--threat-coral)]" />
+                </div>
+                <div className="text-2xl font-extrabold font-mono text-[var(--threat-coral)]">
+                  {sessionSummary?.class_counts?.['Person With Bag'] ?? 0}
+                </div>
+                <div className="text-[10px] text-[var(--text-secondary)] font-sans">Unique Tracks</div>
+              </Card>
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* --- LIVE SURVEILLANCE SUMMARY VIEW --- */
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 w-full max-w-full min-w-0">
+          {/* ACTIVE TRACKS */}
+          <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+            <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider">ACTIVE TRACKS</div>
+            <div className="text-2xl font-extrabold font-mono text-[var(--text-primary)]">{countTotal}</div>
+            <div className="text-[10px] text-[var(--thermal-cyan)] font-sans">ByteTrack</div>
+          </Card>
+
+          {/* PERSON */}
+          <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+            <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+              <span>PERSON</span>
+              <User className="w-3 h-3 text-[var(--thermal-cyan)]" />
+            </div>
+            <div className="text-2xl font-extrabold font-mono text-[var(--thermal-cyan)]">{countPerson}</div>
+            <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
+          </Card>
+
+          {/* VEHICLE */}
+          <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+            <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+              <span>VEHICLE</span>
+              <Car className="w-3 h-3 text-[var(--warning-amber)]" />
+            </div>
+            <div className="text-2xl font-extrabold font-mono text-[var(--warning-amber)]">{countVehicle}</div>
+            <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
+          </Card>
+
+          {/* ANIMAL */}
+          <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+            <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+              <span>ANIMAL</span>
+              <Bird className="w-3 h-3 text-[var(--operational-green)]" />
+            </div>
+            <div className="text-2xl font-extrabold font-mono text-[var(--operational-green)]">{countAnimal}</div>
+            <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
+          </Card>
+
+          {/* DRONE */}
+          <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+            <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+              <span>DRONE</span>
+              <Plane className="w-3 h-3 text-[var(--intelligence-violet)]" />
+            </div>
+            <div className="text-2xl font-extrabold font-mono text-[var(--intelligence-violet)]">{countDrone}</div>
+            <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
+          </Card>
+
+          {/* PERSON WITH BAG */}
+          <Card hoverEffect className="p-3 w-full max-w-full space-y-1 bg-[#070B12] border-[var(--border-subtle)]">
+            <div className="text-[10px] font-mono uppercase text-[var(--text-muted)] tracking-wider flex items-center justify-between">
+              <span>PERSON WITH BAG</span>
+              <Briefcase className="w-3 h-3 text-[var(--threat-coral)]" />
+            </div>
+            <div className="text-2xl font-extrabold font-mono text-[var(--threat-coral)]">{countBag}</div>
+            <div className="text-[10px] text-[var(--text-secondary)] font-sans">Tracked</div>
+          </Card>
+        </div>
+      )}
 
       {/* ======================================================== */}
       {/* 3. SEARCH & FILTER BAR                                   */}
@@ -455,141 +863,281 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
       </Card>
 
       {/* ======================================================== */}
-      {/* 4. MAIN WORKSPACE: ACTIVE DIRECTORY (65%) / INSPECTOR (35%) */}
+      {/* 4. MAIN WORKSPACE: DIRECTORY (65%) / INSPECTOR (35%)    */}
       {/* ======================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 w-full max-w-full min-w-0 items-start">
-        {/* LEFT COLUMN: ACTIVE TARGET DIRECTORY (8 Cols) */}
+        {/* LEFT COLUMN: TARGET DIRECTORY / SESSION HISTORY (8 Cols) */}
         <div className="lg:col-span-8 space-y-4 w-full max-w-full min-w-0">
           <Card className="p-4 space-y-3 w-full max-w-full min-w-0 bg-[#070B12] border-[var(--border-subtle)]">
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-2.5">
               <div className="flex items-center space-x-2 min-w-0">
                 <Crosshair className="w-4 h-4 text-[var(--thermal-cyan)] shrink-0" />
                 <h3 className="text-xs font-bold text-[var(--text-primary)] font-sans uppercase tracking-wider truncate">
-                  ACTIVE TARGET DIRECTORY ({filteredTargets.length})
+                  {isCompletedSession
+                    ? `SESSION TRACK HISTORY (${sessionSummary?.unique_tracks ?? 0} TRACKS RECORDED)`
+                    : `ACTIVE TARGET DIRECTORY (${countTotal})`}
                 </h3>
               </div>
               <div className="flex items-center space-x-1.5 text-[10px] font-mono">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    allTargets.length > 0 ? 'bg-[var(--operational-green)] pulse-live' : 'bg-[var(--text-muted)]'
-                  }`}
-                />
-                <span className={allTargets.length > 0 ? 'text-[var(--operational-green)] font-semibold' : 'text-[var(--text-muted)]'}>
-                  {allTargets.length > 0 ? 'LIVE TRACKS' : 'NO ACTIVE TRACKS'}
-                </span>
+                {isCompletedSession ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[var(--operational-green)]" />
+                    <span className="text-[var(--operational-green)] font-semibold">
+                      COMPLETE · {sessionSummary?.unique_tracks ?? 0} TRACKS STORED
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        countTotal > 0 ? 'bg-[var(--operational-green)] pulse-live' : 'bg-[var(--text-muted)]'
+                      }`}
+                    />
+                    <span className={countTotal > 0 ? 'text-[var(--operational-green)] font-semibold' : 'text-[var(--text-muted)]'}>
+                      {countTotal > 0 ? 'LIVE TRACKS' : 'NO ACTIVE TRACKS'}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
             {/* Table */}
             <div className="table-wrapper overflow-x-auto">
-              <table className="w-full text-left text-xs font-sans border-collapse">
-                <thead>
-                  <tr className="border-b border-[var(--border-subtle)] text-[10px] font-mono uppercase text-[var(--text-muted)]">
-                    <th className="pb-2.5 pr-3 font-semibold">TRACK ID</th>
-                    <th className="pb-2.5 pr-3 font-semibold">OBJECT</th>
-                    <th className="pb-2.5 pr-3 font-semibold">CONFIDENCE</th>
-                    <th className="pb-2.5 pr-3 font-semibold">STATUS</th>
-                    <th className="pb-2.5 pr-3 font-semibold">ZONE</th>
-                    <th className="pb-2.5 pr-3 font-semibold">DIRECTION</th>
-                    <th className="pb-2.5 pr-3 font-semibold">SPEED</th>
-                    <th className="pb-2.5 pr-3 font-semibold">LAST SEEN</th>
-                    <th className="pb-2.5 text-right font-semibold">ACTION</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)]">
-                  {filteredTargets.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="py-12 text-center">
-                        <div className="flex flex-col items-center justify-center space-y-1.5 font-sans">
-                          <Crosshair className="w-7 h-7 text-[var(--text-muted)] opacity-30 mb-1" />
-                          <div className="text-xs font-bold font-mono text-[var(--text-secondary)] uppercase tracking-wider">
-                            NO ACTIVE TARGETS
-                          </div>
-                          <div className="text-[11px] text-[var(--text-muted)]">
-                            Start a thermal video to begin tracking.
-                          </div>
-                        </div>
-                      </td>
+              {isCompletedSession ? (
+                /* --- COMPLETED SESSION TRACKS TABLE --- */
+                <table className="w-full text-left text-xs font-sans border-collapse">
+                  <thead>
+                    <tr className="border-b border-[var(--border-subtle)] text-[10px] font-mono uppercase text-[var(--text-muted)]">
+                      <th className="pb-2.5 pr-3 font-semibold">TRACK ID</th>
+                      <th className="pb-2.5 pr-3 font-semibold">OBJECT</th>
+                      <th className="pb-2.5 pr-3 font-semibold">DETECTIONS</th>
+                      <th className="pb-2.5 pr-3 font-semibold">AVG CONF</th>
+                      <th className="pb-2.5 pr-3 font-semibold">STATUS</th>
+                      <th className="pb-2.5 pr-3 font-semibold">THREAT</th>
+                      <th className="pb-2.5 pr-3 font-semibold">ZONE</th>
+                      <th className="pb-2.5 pr-3 font-semibold">DIRECTION</th>
+                      <th className="pb-2.5 pr-3 font-semibold">FIRST SEEN</th>
+                      <th className="pb-2.5 pr-3 font-semibold">LAST SEEN</th>
+                      <th className="pb-2.5 text-right font-semibold">ACTION</th>
                     </tr>
-                  ) : (
-                    filteredTargets.map((target) => {
-                      const isSelected = selectedTarget?.track_id === target.track_id;
-                      return (
-                        <tr
-                          key={target.track_id}
-                          onClick={() => handleSelectTarget(target.track_id)}
-                          className={`transition-all cursor-pointer group ${
-                            isSelected
-                              ? 'bg-[var(--thermal-cyan)]/10 font-medium'
-                              : 'hover:bg-white/[0.025]'
-                          }`}
-                        >
-                          {/* Track ID */}
-                          <td className="py-3 pr-3 font-mono font-bold text-[var(--thermal-cyan)] whitespace-nowrap">
-                            T-{target.track_id}
-                          </td>
-
-                          {/* Object */}
-                          <td className="py-3 pr-3 whitespace-nowrap">
-                            <div className="flex items-center space-x-2">
-                              <span className="p-1 rounded bg-[var(--bg-surface-secondary)] border border-[var(--border-subtle)]">
-                                {getClassIcon(target.class)}
-                              </span>
-                              <span className="text-[var(--text-primary)] font-semibold">{target.class}</span>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-subtle)]">
+                    {filteredSessionTracks.length === 0 ? (
+                      <tr>
+                        <td colSpan={11} className="py-12 text-center">
+                          <div className="flex flex-col items-center justify-center space-y-1.5 font-sans">
+                            <Crosshair className="w-7 h-7 text-[var(--text-muted)] opacity-30 mb-1" />
+                            <div className="text-xs font-bold font-mono text-[var(--text-secondary)] uppercase tracking-wider">
+                              {isLoadingSummary ? 'LOADING SESSION TRACKS...' : 'NO TRACKS MATCH FILTER'}
                             </div>
-                          </td>
+                            <div className="text-[11px] text-[var(--text-muted)]">
+                              {isLoadingSummary ? 'Fetching recorded ByteTrack tracks...' : 'Try clearing your search or filter options.'}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredSessionTracks.map((track) => {
+                        const isSelected = selectedSessionTrack?.track_id === track.track_id;
+                        return (
+                          <tr
+                            key={track.track_id}
+                            onClick={() => handleSelectTrack(track.track_id)}
+                            className={`transition-all cursor-pointer group ${
+                              isSelected
+                                ? 'bg-[var(--thermal-cyan)]/10 font-medium'
+                                : 'hover:bg-white/[0.025]'
+                            }`}
+                          >
+                            {/* Track ID */}
+                            <td className="py-3 pr-3 font-mono font-bold text-[var(--thermal-cyan)] whitespace-nowrap">
+                              T-{track.track_id}
+                            </td>
 
-                          {/* Confidence */}
-                          <td className="py-3 pr-3 font-mono text-[var(--operational-green)] font-semibold whitespace-nowrap">
-                            {(target.confidence * 100).toFixed(1)}%
-                          </td>
+                            {/* Object */}
+                            <td className="py-3 pr-3 whitespace-nowrap">
+                              <div className="flex items-center space-x-2">
+                                <span className="p-1 rounded bg-[var(--bg-surface-secondary)] border border-[var(--border-subtle)]">
+                                  {getClassIcon(track.class_name)}
+                                </span>
+                                <span className="text-[var(--text-primary)] font-semibold">{track.class_name}</span>
+                              </div>
+                            </td>
 
-                          {/* Status */}
-                          <td className="py-3 pr-3 whitespace-nowrap">
-                            <Badge variant={target.threat ? 'red' : 'cyan'}>
-                              {target.threat ? 'THREAT' : 'TRACKING'}
-                            </Badge>
-                          </td>
+                            {/* Detections */}
+                            <td className="py-3 pr-3 font-mono text-[var(--text-primary)] font-bold whitespace-nowrap">
+                              {track.detection_count}
+                            </td>
 
-                          {/* Zone */}
-                          <td className="py-3 pr-3 text-[var(--text-secondary)] text-[11px] max-w-[130px] truncate">
-                            {target.zone}
-                          </td>
+                            {/* Confidence */}
+                            <td className="py-3 pr-3 font-mono text-[var(--operational-green)] font-semibold whitespace-nowrap">
+                              {(track.average_confidence * 100).toFixed(1)}%
+                            </td>
 
-                          {/* Direction */}
-                          <td className="py-3 pr-3 font-mono text-[var(--text-secondary)] text-[11px] whitespace-nowrap">
-                            {target.direction || 'N/A'}
-                          </td>
+                            {/* Status */}
+                            <td className="py-3 pr-3 whitespace-nowrap">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-500/15 text-blue-400 border border-blue-500/30">
+                                COMPLETED
+                              </span>
+                            </td>
 
-                          {/* Speed */}
-                          <td className="py-3 pr-3 font-mono text-[var(--warning-amber)] font-semibold whitespace-nowrap">
-                            {target.speed && target.speed > 0 ? `${target.speed.toFixed(1)} km/h` : 'N/A'}
-                          </td>
+                            {/* Threat */}
+                            <td className="py-3 pr-3 whitespace-nowrap">
+                              <Badge variant={track.threat ? 'red' : 'cyan'}>
+                                {track.threat ? `THREAT · ${track.threat_level}` : 'NORMAL'}
+                              </Badge>
+                            </td>
 
-                          {/* Last Seen */}
-                          <td className="py-3 pr-3 font-mono text-[var(--text-secondary)] text-[10px] whitespace-nowrap">
-                            {target.last_seen}
-                          </td>
+                            {/* Zone */}
+                            <td className="py-3 pr-3 text-[var(--text-secondary)] text-[11px] max-w-[120px] truncate">
+                              {track.zone || 'N/A'}
+                            </td>
 
-                          {/* Action */}
-                          <td className="py-3 text-right whitespace-nowrap">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSelectTarget(target.track_id);
-                              }}
-                              className="px-2.5 py-1 rounded-lg btn-secondary-interactive text-[11px] font-sans text-[var(--thermal-cyan)] inline-flex items-center gap-1 cursor-pointer"
-                            >
-                              <span>Inspect</span>
-                              <ArrowUpRight className="w-3 h-3" />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+                            {/* Direction */}
+                            <td className="py-3 pr-3 font-mono text-[var(--text-secondary)] text-[11px] whitespace-nowrap">
+                              {track.direction || 'N/A'}
+                            </td>
+
+                            {/* First Seen */}
+                            <td className="py-3 pr-3 font-mono text-[var(--text-secondary)] text-[10px] whitespace-nowrap">
+                              {track.first_seen ? formatIST(track.first_seen, { includeTimeOnly: true }) : 'N/A'}
+                            </td>
+
+                            {/* Last Seen */}
+                            <td className="py-3 pr-3 font-mono text-[var(--text-secondary)] text-[10px] whitespace-nowrap">
+                              {track.last_seen ? formatIST(track.last_seen, { includeTimeOnly: true }) : 'N/A'}
+                            </td>
+
+                            {/* Action */}
+                            <td className="py-3 text-right whitespace-nowrap">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSelectTrack(track.track_id);
+                                }}
+                                className="px-2.5 py-1 rounded-lg btn-secondary-interactive text-[11px] font-sans text-[var(--thermal-cyan)] inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <span>Inspect</span>
+                                <ArrowUpRight className="w-3 h-3" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              ) : (
+                /* --- LIVE ACTIVE TARGETS TABLE --- */
+                <table className="w-full text-left text-xs font-sans border-collapse">
+                  <thead>
+                    <tr className="border-b border-[var(--border-subtle)] text-[10px] font-mono uppercase text-[var(--text-muted)]">
+                      <th className="pb-2.5 pr-3 font-semibold">TRACK ID</th>
+                      <th className="pb-2.5 pr-3 font-semibold">OBJECT</th>
+                      <th className="pb-2.5 pr-3 font-semibold">CONFIDENCE</th>
+                      <th className="pb-2.5 pr-3 font-semibold">STATUS</th>
+                      <th className="pb-2.5 pr-3 font-semibold">ZONE</th>
+                      <th className="pb-2.5 pr-3 font-semibold">DIRECTION</th>
+                      <th className="pb-2.5 pr-3 font-semibold">SPEED</th>
+                      <th className="pb-2.5 pr-3 font-semibold">LAST SEEN</th>
+                      <th className="pb-2.5 text-right font-semibold">ACTION</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-subtle)]">
+                    {filteredLiveTargets.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-12 text-center">
+                          <div className="flex flex-col items-center justify-center space-y-1.5 font-sans">
+                            <Crosshair className="w-7 h-7 text-[var(--text-muted)] opacity-30 mb-1" />
+                            <div className="text-xs font-bold font-mono text-[var(--text-secondary)] uppercase tracking-wider">
+                              NO ACTIVE TRACKS
+                            </div>
+                            <div className="text-[11px] text-[var(--text-muted)]">
+                              Start a thermal video to begin tracking.
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredLiveTargets.map((target) => {
+                        const isSelected = selectedLiveTarget?.track_id === target.track_id;
+                        return (
+                          <tr
+                            key={target.track_id}
+                            onClick={() => handleSelectTrack(target.track_id)}
+                            className={`transition-all cursor-pointer group ${
+                              isSelected
+                                ? 'bg-[var(--thermal-cyan)]/10 font-medium'
+                                : 'hover:bg-white/[0.025]'
+                            }`}
+                          >
+                            {/* Track ID */}
+                            <td className="py-3 pr-3 font-mono font-bold text-[var(--thermal-cyan)] whitespace-nowrap">
+                              T-{target.track_id}
+                            </td>
+
+                            {/* Object */}
+                            <td className="py-3 pr-3 whitespace-nowrap">
+                              <div className="flex items-center space-x-2">
+                                <span className="p-1 rounded bg-[var(--bg-surface-secondary)] border border-[var(--border-subtle)]">
+                                  {getClassIcon(target.class)}
+                                </span>
+                                <span className="text-[var(--text-primary)] font-semibold">{target.class}</span>
+                              </div>
+                            </td>
+
+                            {/* Confidence */}
+                            <td className="py-3 pr-3 font-mono text-[var(--operational-green)] font-semibold whitespace-nowrap">
+                              {(target.confidence * 100).toFixed(1)}%
+                            </td>
+
+                            {/* Status */}
+                            <td className="py-3 pr-3 whitespace-nowrap">
+                              <Badge variant={target.threat ? 'red' : 'cyan'}>
+                                {target.threat ? 'THREAT' : 'NORMAL'}
+                              </Badge>
+                            </td>
+
+                            {/* Zone */}
+                            <td className="py-3 pr-3 text-[var(--text-secondary)] text-[11px] max-w-[130px] truncate">
+                              {target.zone && target.zone !== 'N/A' ? target.zone : 'N/A'}
+                            </td>
+
+                            {/* Direction */}
+                            <td className="py-3 pr-3 font-mono text-[var(--text-secondary)] text-[11px] whitespace-nowrap">
+                              {target.direction && target.direction !== 'N/A' ? target.direction : 'N/A'}
+                            </td>
+
+                            {/* Speed */}
+                            <td className="py-3 pr-3 font-mono text-[var(--warning-amber)] font-semibold whitespace-nowrap">
+                              {target.speed && target.speed > 0 ? `${target.speed.toFixed(1)} km/h` : 'N/A'}
+                            </td>
+
+                            {/* Last Seen */}
+                            <td className="py-3 pr-3 font-mono text-[var(--text-secondary)] text-[10px] whitespace-nowrap">
+                              {target.last_seen || 'N/A'}
+                            </td>
+
+                            {/* Action */}
+                            <td className="py-3 text-right whitespace-nowrap">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSelectTrack(target.track_id);
+                                }}
+                                className="px-2.5 py-1 rounded-lg btn-secondary-interactive text-[11px] font-sans text-[var(--thermal-cyan)] inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <span>Inspect</span>
+                                <ArrowUpRight className="w-3 h-3" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              )}
             </div>
           </Card>
         </div>
@@ -605,76 +1153,287 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
                   TARGET INSPECTOR
                 </h3>
               </div>
-              {selectedTarget && (
+              {isCompletedSession && selectedSessionTrack ? (
                 <div className="flex items-center space-x-2">
                   <span className="font-mono font-bold text-xs text-[var(--thermal-cyan)] bg-[var(--thermal-cyan)]/10 px-2 py-0.5 rounded-full border border-[var(--thermal-cyan)]/25">
-                    T-{selectedTarget.track_id} · {selectedTarget.class.toUpperCase()}
+                    T-{selectedSessionTrack.track_id} · {selectedSessionTrack.class_name.toUpperCase()}
                   </span>
-                  <Badge variant={selectedTarget.threat ? 'red' : 'cyan'}>
-                    {selectedTarget.threat ? `THREAT · ${selectedTarget.threat_level}` : 'NORMAL · LOW'}
+                  <Badge variant={selectedSessionTrack.threat ? 'red' : 'cyan'}>
+                    {selectedSessionTrack.threat ? `THREAT · ${selectedSessionTrack.threat_level}` : 'NORMAL · LOW'}
                   </Badge>
                 </div>
-              )}
+              ) : selectedLiveTarget ? (
+                <div className="flex items-center space-x-2">
+                  <span className="font-mono font-bold text-xs text-[var(--thermal-cyan)] bg-[var(--thermal-cyan)]/10 px-2 py-0.5 rounded-full border border-[var(--thermal-cyan)]/25">
+                    T-{selectedLiveTarget.track_id} · {selectedLiveTarget.class.toUpperCase()}
+                  </span>
+                  {isTargetActive ? (
+                    <Badge variant={selectedLiveTarget.threat ? 'red' : 'cyan'}>
+                      {selectedLiveTarget.threat ? `THREAT · ${selectedLiveTarget.threat_level}` : 'NORMAL · LOW'}
+                    </Badge>
+                  ) : (
+                    <div className="flex items-center space-x-1.5 flex-wrap gap-1">
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-bold">
+                        TRACK NO LONGER ACTIVE
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ) : null}
             </div>
 
             {/* 3D Target Trajectory Visualization */}
-            <TargetTrajectory3D target={selectedTarget} className="w-full" />
+            <TargetTrajectory3D target={trajectoryTargetFor3D} className="w-full" />
 
-            {/* Target Details / Empty State */}
-            {selectedTarget ? (
+            {/* Target Details Content */}
+            {isCompletedSession && selectedSessionTrack ? (
+              /* --- COMPLETED TRACK INSPECTOR --- */
               <div className="space-y-3 font-sans text-xs">
+                {/* Status Badges */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30 font-bold">
+                    STATUS: COMPLETED
+                  </span>
+                  <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-white/10 text-white/80 border border-white/20">
+                    LAST KNOWN POSITION
+                  </span>
+                </div>
+
                 {/* Structured Metrics Grid */}
                 <div className="space-y-2">
                   <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                    <span className="text-[var(--text-muted)]">AI CONFIDENCE:</span>
-                    <span className="font-mono font-bold text-[var(--operational-green)]">
-                      {(selectedTarget.confidence * 100).toFixed(1)}%
+                    <span className="text-[var(--text-muted)]">TRACK ID:</span>
+                    <span className="font-mono font-bold text-[var(--thermal-cyan)]">
+                      T-{selectedSessionTrack.track_id}
                     </span>
                   </div>
 
                   <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                    <span className="text-[var(--text-muted)]">STATUS:</span>
+                    <span className="text-[var(--text-muted)]">OBJECT CLASS:</span>
                     <span className="font-bold text-[var(--text-primary)]">
-                      {selectedTarget.threat ? 'THREAT' : 'TRACKING'}
+                      {selectedSessionTrack.class_name}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">DETECTIONS:</span>
+                    <span className="font-mono font-bold text-[var(--text-primary)]">
+                      {selectedSessionTrack.detection_count} frames
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">AVG CONFIDENCE:</span>
+                    <span className="font-mono font-bold text-[var(--operational-green)]">
+                      {(selectedSessionTrack.average_confidence * 100).toFixed(1)}%
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">CONFIDENCE RANGE:</span>
+                    <span className="font-mono text-[var(--text-secondary)] text-[11px]">
+                      {(selectedSessionTrack.minimum_confidence * 100).toFixed(1)}% - {(selectedSessionTrack.maximum_confidence * 100).toFixed(1)}%
                     </span>
                   </div>
 
                   <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
                     <span className="text-[var(--text-muted)]">THREAT LEVEL:</span>
-                    <SeverityIndicator level={selectedTarget.threat_level} />
+                    <SeverityIndicator level={selectedSessionTrack.threat_level} />
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">THREAT REASON:</span>
+                    <span className="font-sans text-[var(--text-secondary)] text-[11px] truncate max-w-[180px]">
+                      {selectedSessionTrack.threat_reason || (selectedSessionTrack.threat ? 'Restricted perimeter intrusion' : 'Standard tracking')}
+                    </span>
                   </div>
 
                   <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
                     <span className="text-[var(--text-muted)]">ZONE:</span>
                     <span className="font-sans text-[var(--text-secondary)] truncate">
-                      {selectedTarget.zone}
-                    </span>
-                  </div>
-
-                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                    <span className="text-[var(--text-muted)]">REASON:</span>
-                    <span className="font-sans text-[var(--text-secondary)] text-[11px] truncate max-w-[180px]">
-                      {selectedTarget.threat_reason || (selectedTarget.threat ? 'Restricted perimeter boundary alert' : 'Routine thermal tracking')}
+                      {selectedSessionTrack.zone || 'N/A'}
                     </span>
                   </div>
 
                   <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
                     <span className="text-[var(--text-muted)]">ESTIMATED SPEED:</span>
                     <span className="font-mono text-[var(--text-primary)]">
-                      {selectedTarget.speed && selectedTarget.speed > 0 ? `${selectedTarget.speed.toFixed(1)} km/h` : 'N/A'}
+                      {selectedSessionTrack.speed && selectedSessionTrack.speed > 0 ? `${selectedSessionTrack.speed.toFixed(1)} km/h` : 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">DIRECTION:</span>
+                    <span className="font-mono text-[var(--text-primary)]">
+                      {selectedSessionTrack.direction || 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">FIRST SEEN:</span>
+                    <span className="font-mono text-[var(--text-secondary)]">
+                      {selectedSessionTrack.first_seen ? formatIST(selectedSessionTrack.first_seen, { includeTimeOnly: true }) : 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">LAST KNOWN POSITION:</span>
+                    <span className="font-mono text-[var(--text-primary)]">
+                      {selectedSessionTrack.last_position
+                        ? `X: ${selectedSessionTrack.last_position.x.toFixed(2)}, Y: ${selectedSessionTrack.last_position.y.toFixed(2)}`
+                        : 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">LAST SEEN:</span>
+                    <span className="font-mono text-[var(--text-secondary)]">
+                      {selectedSessionTrack.last_seen ? formatIST(selectedSessionTrack.last_seen, { includeTimeOnly: true }) : 'N/A'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Threat Banner if Alert */}
+                {selectedSessionTrack.threat && (
+                  <div className="p-3 rounded-xl bg-[var(--threat-coral)]/10 border border-[var(--threat-coral)]/30 text-[var(--threat-coral)] text-xs space-y-1">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                      <span>THREAT INCIDENT RECORDED</span>
+                    </div>
+                    <p className="text-[11px] text-[var(--threat-coral)] leading-relaxed">
+                      {selectedSessionTrack.threat_reason || 'Target triggered automated threat detection.'}
+                    </p>
+                  </div>
+                )}
+
+                {/* Track History Audit Timeline */}
+                <div className="space-y-2 pt-2 border-t border-[var(--border-subtle)]">
+                  <div className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-wider flex justify-between">
+                    <span>TRACK HISTORY AUDIT</span>
+                    <span className="text-[var(--thermal-cyan)]">BYTE TRACK RECORD</span>
+                  </div>
+
+                  <div data-lenis-prevent className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                    <div className="p-2 bg-[var(--bg-surface-secondary)] rounded-lg border border-[var(--border-subtle)] space-y-0.5 text-xs font-sans">
+                      <div className="text-[10px] font-mono text-[var(--text-muted)]">
+                        {selectedSessionTrack.first_seen ? formatIST(selectedSessionTrack.first_seen, { includeTimeOnly: true }) : 'SESSION START'}
+                      </div>
+                      <div className="text-[11px] text-[var(--text-secondary)]">
+                        Track T-{selectedSessionTrack.track_id} initialized by ByteTrack tracker
+                      </div>
+                    </div>
+                    <div className="p-2 bg-[var(--bg-surface-secondary)] rounded-lg border border-[var(--border-subtle)] space-y-0.5 text-xs font-sans">
+                      <div className="text-[10px] font-mono text-[var(--thermal-cyan)]">
+                        RECORDED ACROSS {selectedSessionTrack.detection_count} FRAMES
+                      </div>
+                      <div className="text-[11px] text-[var(--text-secondary)]">
+                        Real ByteTrack points: {selectedSessionTrack.movement_points?.length || 1} movement vectors recorded
+                      </div>
+                    </div>
+                    {selectedSessionTrack.threat && (
+                      <div className="p-2 bg-[var(--threat-coral)]/10 rounded-lg border border-[var(--threat-coral)]/20 space-y-0.5 text-xs font-sans">
+                        <div className="text-[10px] font-mono text-[var(--threat-coral)]">
+                          THREAT ENGINE TRIGGERED
+                        </div>
+                        <div className="text-[11px] text-[var(--threat-coral)]">
+                          {selectedSessionTrack.threat_reason || 'Perimeter intrusion violation'}
+                        </div>
+                      </div>
+                    )}
+                    <div className="p-2 bg-[var(--bg-surface-secondary)] rounded-lg border border-[var(--border-subtle)] space-y-0.5 text-xs font-sans">
+                      <div className="text-[10px] font-mono text-[var(--text-muted)]">
+                        {selectedSessionTrack.last_seen ? formatIST(selectedSessionTrack.last_seen, { includeTimeOnly: true }) : 'SESSION END'}
+                      </div>
+                      <div className="text-[11px] text-[var(--text-secondary)]">
+                        Last known position recorded at {selectedSessionTrack.last_position ? `X: ${selectedSessionTrack.last_position.x.toFixed(2)}, Y: ${selectedSessionTrack.last_position.y.toFixed(2)}` : 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : selectedLiveTarget ? (
+              /* --- LIVE TARGET INSPECTOR --- */
+              <div className="space-y-3 font-sans text-xs">
+                {/* Structured Metrics Grid */}
+                <div className="space-y-2">
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">TRACK ID:</span>
+                    <span className="font-mono font-bold text-[var(--thermal-cyan)]">
+                      T-{selectedLiveTarget.track_id}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">OBJECT CLASS:</span>
+                    <span className="font-bold text-[var(--text-primary)]">
+                      {selectedLiveTarget.class}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">AI CONFIDENCE:</span>
+                    <span className="font-mono font-bold text-[var(--operational-green)]">
+                      {(selectedLiveTarget.confidence * 100).toFixed(1)}%
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">STATUS:</span>
+                    <span className="font-bold text-[var(--text-primary)]">
+                      {isTargetActive ? 'ACTIVE' : (selectedLiveTarget.threat ? 'RECORDED THREAT / TRACK NO LONGER ACTIVE' : 'TRACK NO LONGER ACTIVE')}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">THREAT LEVEL:</span>
+                    <SeverityIndicator level={selectedLiveTarget.threat_level} />
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">THREAT REASON:</span>
+                    <span className="font-sans text-[var(--text-secondary)] text-[11px] truncate max-w-[180px]">
+                      {selectedLiveTarget.threat_reason || (selectedLiveTarget.threat ? 'Restricted perimeter boundary alert' : 'Routine thermal tracking')}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">ZONE:</span>
+                    <span className="font-sans text-[var(--text-secondary)] truncate">
+                      {selectedLiveTarget.zone && selectedLiveTarget.zone !== 'N/A' ? selectedLiveTarget.zone : 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">ESTIMATED SPEED:</span>
+                    <span className="font-mono text-[var(--text-primary)]">
+                      {selectedLiveTarget.speed && selectedLiveTarget.speed > 0 ? `${selectedLiveTarget.speed.toFixed(1)} km/h` : 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">DIRECTION:</span>
+                    <span className="font-mono text-[var(--text-primary)]">
+                      {selectedLiveTarget.direction && selectedLiveTarget.direction !== 'N/A' ? selectedLiveTarget.direction : 'N/A'}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                    <span className="text-[var(--text-muted)]">LAST SEEN:</span>
+                    <span className="font-mono text-[var(--text-secondary)]">
+                      {selectedLiveTarget.last_seen || 'N/A'}
                     </span>
                   </div>
                 </div>
 
                 {/* Threat Banner if Alert Active */}
-                {selectedTarget.threat && (
+                {selectedLiveTarget.threat && (
                   <div className="p-3 rounded-xl bg-[var(--threat-coral)]/10 border border-[var(--threat-coral)]/30 text-[var(--threat-coral)] text-xs space-y-1">
                     <div className="font-bold flex items-center gap-1.5">
                       <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                       <span>THREAT ALERT</span>
                     </div>
                     <p className="text-[11px] text-[var(--threat-coral)] leading-relaxed">
-                      {selectedTarget.threat_reason || 'Target breached restricted perimeter boundary.'}
+                      {selectedLiveTarget.threat_reason || 'Target breached restricted perimeter boundary.'}
                     </p>
                   </div>
                 )}
@@ -687,7 +1446,7 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
                   </div>
 
                   <div data-lenis-prevent className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                    {selectedTarget.history.map((h, i) => (
+                    {selectedLiveTarget.history.map((h, i) => (
                       <div
                         key={i}
                         className="p-2 bg-[var(--bg-surface-secondary)] rounded-lg border border-[var(--border-subtle)] space-y-0.5 text-xs font-sans"
@@ -698,6 +1457,16 @@ export const TargetTracking: React.FC<TargetTrackingProps> = ({ detections = [] 
                     ))}
                   </div>
                 </div>
+              </div>
+            ) : userSelected && selectedTrackId != null ? (
+              <div className="text-center py-10 px-4 font-sans space-y-1.5 border border-dashed border-[var(--threat-coral)]/30 rounded-xl bg-[var(--threat-coral)]/5">
+                <Navigation className="w-7 h-7 text-[var(--threat-coral)] mx-auto opacity-70 mb-1" />
+                <div className="text-xs font-bold font-mono text-[var(--threat-coral)] uppercase tracking-wider">
+                  TRACK T-{selectedTrackId} NO LONGER ACTIVE
+                </div>
+                <p className="text-[11px] text-[var(--text-muted)] max-w-xs mx-auto">
+                  Target has exited the frame or track has expired. Select another active track to inspect.
+                </p>
               </div>
             ) : (
               <div className="text-center py-10 px-4 font-sans space-y-1.5 border border-dashed border-[var(--border-subtle)] rounded-xl bg-black/20">

@@ -225,6 +225,7 @@ export interface SessionTrack {
 export interface SessionSummary {
   session_id: string;
   video_id: string;
+  filename?: string;
   status: VideoStatusType;
   total_detections: number;
   unique_tracks: number;

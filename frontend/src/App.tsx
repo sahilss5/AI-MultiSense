@@ -44,19 +44,56 @@ export function App() {
   const [currentSessionEvents, setCurrentSessionEvents] = useState<CurrentSessionActivity[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
   const seenSessionThreatsRef = useRef<Set<string>>(new Set());
+  const seenSessionTracksRef = useRef<Set<string>>(new Set());
+  const hasLoggedStartRef = useRef<boolean>(false);
+  const hasLoggedCompletedRef = useRef<boolean>(false);
 
   const currentVideoIdRef = useRef<string | null>(null);
+  const lastSessionStartTimeRef = useRef<string | null>(null);
+  const eventSeqRef = useRef<number>(0);
 
-  // Watch videoStatus to start or reset the current surveillance session
+  // Helper to format track activity title matching standard surveillance nomenclature
+  const formatTrackDisplay = (trackId: number, rawClass: string, isThreat: boolean) => {
+    const norm = (rawClass || 'Target').replace(/_/g, ' ').toLowerCase();
+    const titleCase = norm
+      .split(' ')
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+    const code = `T-${trackId.toString().padStart(3, '0')}`;
+    if (isThreat) {
+      return {
+        track: `${code} ${titleCase}`,
+        descDefault: 'HIGH THREAT',
+      };
+    }
+    return {
+      track: `${code} ${titleCase} detected`,
+      descDefault: `${titleCase} tracked via ByteTrack`,
+    };
+  };
+
+  // Watch videoStatus to start, isolate, or complete the current surveillance session
   useEffect(() => {
-    // If video ID changed to a new video, clear previous video threats
-    if (videoStatus.video_id && currentVideoIdRef.current && videoStatus.video_id !== currentVideoIdRef.current) {
-      currentVideoIdRef.current = videoStatus.video_id;
+    // Detect video ID change or new session start
+    const isNewVideo = Boolean(videoStatus.video_id && currentVideoIdRef.current && videoStatus.video_id !== currentVideoIdRef.current);
+    const isNewSession = Boolean(
+      videoStatus.session_start_time &&
+      lastSessionStartTimeRef.current &&
+      videoStatus.session_start_time !== lastSessionStartTimeRef.current
+    );
+
+    if (isNewVideo || isNewSession) {
+      currentVideoIdRef.current = videoStatus.video_id || null;
+      lastSessionStartTimeRef.current = videoStatus.session_start_time || null;
       seenSessionThreatsRef.current.clear();
+      seenSessionTracksRef.current.clear();
+      hasLoggedStartRef.current = false;
+      hasLoggedCompletedRef.current = false;
       setCurrentSessionEvents([]);
       setSelectedTrackId(null);
-    } else if (videoStatus.video_id && !currentVideoIdRef.current) {
-      currentVideoIdRef.current = videoStatus.video_id;
+    } else {
+      if (videoStatus.video_id) currentVideoIdRef.current = videoStatus.video_id;
+      if (videoStatus.session_start_time) lastSessionStartTimeRef.current = videoStatus.session_start_time;
     }
 
     if (videoStatus.status === 'processing' || videoStatus.status === 'paused') {
@@ -65,50 +102,152 @@ export function App() {
         : null;
 
       setSessionStartTime((prev) => {
-        if (backendStartTime) {
-          return backendStartTime;
-        }
-        if (!prev) {
-          return Date.now();
-        }
+        if (backendStartTime) return backendStartTime;
+        if (!prev) return Date.now();
         return prev;
       });
-    } else if (videoStatus.status === 'no_video_selected') {
-      currentVideoIdRef.current = null;
-      setSessionStartTime(null);
-      seenSessionThreatsRef.current.clear();
-      setCurrentSessionEvents([]);
-      setSelectedTrackId(null);
-    }
-    // Note: when videoStatus.status === 'completed' or 'stopped', we DO NOT clear sessionStartTime or events
-    // so the recorded threats and activities from that video session remain available for the examiner to inspect!
-  }, [videoStatus.status, videoStatus.video_id, videoStatus.session_start_time]);
 
-  // Capture real threat events generated during this session from live detections
+      // Log session start event once per video session
+      if (!hasLoggedStartRef.current) {
+        hasLoggedStartRef.current = true;
+        const time = formatIST(new Date(), { includeTimeOnly: true });
+        const startEvt: CurrentSessionActivity = {
+          id: `start-${videoStatus.video_id || Date.now()}`,
+          time,
+          track: 'Video Processing Started',
+          desc: `Surveillance session initialized for ${videoStatus.filename || 'Thermal Stream'}`,
+          type: 'SYSTEM',
+          severity: 'LOW',
+        };
+        setCurrentSessionEvents((prev) => [startEvt, ...prev.filter((e) => e.id !== startEvt.id)]);
+      }
+    } else if (videoStatus.status === 'completed') {
+      // Log session completed event once per session
+      if (!hasLoggedCompletedRef.current) {
+        hasLoggedCompletedRef.current = true;
+        const time = formatIST(new Date(), { includeTimeOnly: true });
+        const endEvt: CurrentSessionActivity = {
+          id: `completed-${videoStatus.video_id || Date.now()}`,
+          time,
+          track: 'Video Processing Completed',
+          desc: 'Surveillance stream reached end of file. All tracks finalized.',
+          type: 'SYSTEM',
+          severity: 'LOW',
+        };
+        setCurrentSessionEvents((prev) => [endEvt, ...prev.filter((e) => e.id !== endEvt.id)]);
+      }
+    } else if (videoStatus.status === 'no_video_selected') {
+      if (currentVideoIdRef.current !== null) {
+        currentVideoIdRef.current = null;
+        lastSessionStartTimeRef.current = null;
+        setSessionStartTime(null);
+        seenSessionThreatsRef.current.clear();
+        seenSessionTracksRef.current.clear();
+        hasLoggedStartRef.current = false;
+        hasLoggedCompletedRef.current = false;
+        setCurrentSessionEvents([]);
+        setSelectedTrackId(null);
+      }
+    }
+  }, [videoStatus.status, videoStatus.video_id, videoStatus.session_start_time, videoStatus.filename]);
+
+  // Capture real track detections and threat events generated during this session
   useEffect(() => {
     if (!sessionStartTime || (videoStatus.status !== 'processing' && videoStatus.status !== 'paused')) {
       return;
     }
 
     detections.forEach((d) => {
-      if (d.threat) {
-        const threatKey = `${d.track_id}-${d.class}`;
+      const tid = d.track_id != null && d.track_id > 0 ? d.track_id : 1;
+      const rawClass = d.class_name || d.class || 'Target';
+      const isThreat = Boolean(d.threat);
+      const time = d.timestamp ? formatIST(d.timestamp, { includeTimeOnly: true }) : formatIST(new Date(), { includeTimeOnly: true });
+      const display = formatTrackDisplay(tid, rawClass, isThreat);
+
+      // Track discovery event (Person, Vehicle, Drone, etc.)
+      const trackKey = `track-${tid}-${d.class}`;
+      if (!seenSessionTracksRef.current.has(trackKey)) {
+        seenSessionTracksRef.current.add(trackKey);
+        const seq = ++eventSeqRef.current;
+        const newEvt: CurrentSessionActivity = {
+          id: `det-${Date.now()}-${seq}-${tid}`,
+          time,
+          track: display.track,
+          desc: isThreat
+            ? (d.threat_reason || 'HIGH THREAT')
+            : `${display.descDefault} • ${(d.confidence * 100).toFixed(1)}% conf`,
+          type: isThreat ? 'THREAT' : 'DETECTION',
+          severity: isThreat ? ((d.threat_level as any) || 'HIGH') : 'LOW',
+        };
+        setCurrentSessionEvents((prev) => [newEvt, ...prev.slice(0, 24)]);
+      }
+
+      // Threat event
+      if (isThreat) {
+        const threatKey = `threat-${tid}-${d.class}`;
         if (!seenSessionThreatsRef.current.has(threatKey)) {
           seenSessionThreatsRef.current.add(threatKey);
-          const time = formatIST(new Date(), { includeTimeOnly: true });
-          const newEvt: CurrentSessionActivity = {
-            id: `sess-${Date.now()}-${d.track_id}`,
+          const seq = ++eventSeqRef.current;
+          const threatEvt: CurrentSessionActivity = {
+            id: `threat-${Date.now()}-${seq}-${tid}`,
             time,
-            track: `${d.class.replace(/_/g, ' ').toUpperCase()} T-${d.track_id != null ? d.track_id : 1} DETECTED`,
-            desc: d.threat_reason || 'Unauthorized threat detected',
+            track: display.track,
+            desc: d.threat_reason || 'HIGH THREAT',
             type: 'THREAT',
             severity: (d.threat_level as any) || 'HIGH',
           };
-          setCurrentSessionEvents((prev) => [newEvt, ...prev.slice(0, 9)]);
+          setCurrentSessionEvents((prev) => [threatEvt, ...prev.slice(0, 24)]);
         }
       }
     });
   }, [detections, sessionStartTime, videoStatus.status]);
+
+  // Hydrate completed session activity from backend if freshly loaded while completed
+  useEffect(() => {
+    if (videoStatus.video_id && videoStatus.status === 'completed' && currentSessionEvents.length === 0) {
+      apiService.getSessionSummary(videoStatus.video_id).then((summary) => {
+        if (summary && summary.tracks && summary.tracks.length > 0) {
+          const events: CurrentSessionActivity[] = [];
+          events.push({
+            id: `completed-${videoStatus.video_id}`,
+            time: summary.last_seen ? formatIST(summary.last_seen, { includeTimeOnly: true }) : formatIST(new Date(), { includeTimeOnly: true }),
+            track: 'Video Processing Completed',
+            desc: 'Surveillance stream reached end of file. All tracks finalized.',
+            type: 'SYSTEM',
+            severity: 'LOW',
+          });
+
+          summary.tracks.slice(0, 10).forEach((t: any) => {
+            const tid = t.track_id || 1;
+            const rawClass = t.class_name || t.class || 'Target';
+            const isThreat = Boolean(t.threat);
+            const time = t.first_seen ? formatIST(t.first_seen, { includeTimeOnly: true }) : formatIST(new Date(), { includeTimeOnly: true });
+            const display = formatTrackDisplay(tid, rawClass, isThreat);
+
+            events.push({
+              id: `track-${t.track_id}`,
+              time,
+              track: display.track,
+              desc: isThreat ? (t.threat_reason || 'HIGH THREAT') : display.descDefault,
+              type: isThreat ? 'THREAT' : 'DETECTION',
+              severity: isThreat ? (t.threat_level || 'HIGH') : 'LOW',
+            });
+          });
+
+          events.push({
+            id: `start-${videoStatus.video_id}`,
+            time: summary.first_seen ? formatIST(summary.first_seen, { includeTimeOnly: true }) : formatIST(new Date(), { includeTimeOnly: true }),
+            track: 'Video Processing Started',
+            desc: `Surveillance session initialized for ${summary.filename || videoStatus.filename || 'Thermal Feed'}`,
+            type: 'SYSTEM',
+            severity: 'LOW',
+          });
+
+          setCurrentSessionEvents(events);
+        }
+      }).catch(() => {});
+    }
+  }, [videoStatus.video_id, videoStatus.status, currentSessionEvents.length]);
 
   // Also merge any alerts from backend that were generated during this active session
   useEffect(() => {
@@ -124,12 +263,12 @@ export function App() {
         const newEvt: CurrentSessionActivity = {
           id: alertKey,
           time,
-          track: `${(a.object_class || a.threat_type || 'TARGET').replace(/_/g, ' ').toUpperCase()} T-${a.track_id || 1} DETECTED`,
+          track: `T-${(a.track_id || 1).toString().padStart(3, '0')} ${(a.object_class || a.threat_type || 'TARGET').replace(/_/g, ' ').toUpperCase()} • THREAT`,
           desc: a.reason,
           type: 'THREAT',
           severity: (a.severity as any) || 'HIGH',
         };
-        setCurrentSessionEvents((prev) => [newEvt, ...prev.slice(0, 9)]);
+        setCurrentSessionEvents((prev) => [newEvt, ...prev.slice(0, 19)]);
       }
     });
   }, [recentAlerts, sessionStartTime]);
@@ -353,6 +492,8 @@ export function App() {
                           zones={zones}
                           videoStatus={videoStatus}
                           onRefreshStatus={refreshStatus}
+                          selectedTrackId={selectedTrackId}
+                          onSelectTrackId={setSelectedTrackId}
                         />
                       )}
 
@@ -379,7 +520,7 @@ export function App() {
                         />
                       )}
 
-                      {currentPage === 'zones' && <RestrictedZones />}
+                      {currentPage === 'zones' && <RestrictedZones detections={detections} />}
 
                       {currentPage === 'sensors' && <SensorManagement onNavigate={handlePageSelect} />}
 

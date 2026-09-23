@@ -47,6 +47,16 @@ def update_zone(zone_id: str, zone_in: ZoneUpdate, session: Session = Depends(ge
     if not zone_model:
         zone_model = session.exec(select(ZoneModel).where(ZoneModel.name == zone_id)).first()
     if not zone_model:
+        db_zones = session.exec(select(ZoneModel)).all()
+        alias_map = {
+            "zone-1": 0,
+            "zone-2": 1,
+            "Restricted Storage Bravo": 0,
+            "Perimeter Access Road": 1,
+        }
+        if zone_id in alias_map and len(db_zones) > alias_map[zone_id]:
+            zone_model = db_zones[alias_map[zone_id]]
+    if not zone_model:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found")
 
     if zone_in.name is not None:
@@ -73,6 +83,17 @@ def delete_zone(zone_id: str, session: Session = Depends(get_session)):
     if not zone_model:
         # Fallback: check by zone name in case an alias or name was provided
         zone_model = session.exec(select(ZoneModel).where(ZoneModel.name == zone_id)).first()
+    if not zone_model:
+        # Fallback: check known alias or UI demo zone IDs
+        db_zones = session.exec(select(ZoneModel)).all()
+        alias_map = {
+            "zone-1": 0,
+            "zone-2": 1,
+            "Restricted Storage Bravo": 0,
+            "Perimeter Access Road": 1,
+        }
+        if zone_id in alias_map and len(db_zones) > alias_map[zone_id]:
+            zone_model = db_zones[alias_map[zone_id]]
     if not zone_model:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Zone not found")
     session.delete(zone_model)

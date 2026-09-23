@@ -90,28 +90,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const isVideoRunning = videoStatus?.status === 'processing';
   const isVideoPaused = videoStatus?.status === 'paused';
   const isVideoCompleted = videoStatus?.status === 'completed';
+  const isVideoActive = isVideoRunning || isVideoPaused;
   const hasUploadedVideo = Boolean(videoStatus?.video_id && videoStatus.status !== 'no_video_selected');
   const activeVideoUrl = hasUploadedVideo && videoStatus?.video_id
     ? apiService.getVideoFileUrl(videoStatus.video_id)
     : null;
 
-  // Real metrics — no fake demo counts
-  const activeTracks = isVideoRunning
-    ? (systemStatus?.active_tracks ?? latestDetections.filter((d) => d.track_id != null).length)
+  // Live active tracks: ONLY when video is actively processing or paused
+  // When completed, stopped, or no video, active detections are strictly empty (count = 0)
+  const currentActiveDetections = isVideoActive ? latestDetections : [];
+
+  // Real metrics — strictly 0 when not actively running/paused
+  const activeTracks = isVideoActive
+    ? (currentActiveDetections.filter((d) => d.track_id != null && d.track_id > 0).length || (systemStatus?.active_tracks ?? currentActiveDetections.length))
     : 0;
-  const activeThreats = isVideoRunning
-    ? (systemStatus?.active_threats ?? latestDetections.filter((d) => d.threat).length)
+  const activeThreats = isVideoActive
+    ? currentActiveDetections.filter((d) => d.threat).length
     : 0;
   const fps = isVideoRunning ? (systemStatus?.fps ?? 0.0) : 0.0;
 
-  const activeThreatObjects = latestDetections.filter((d) => d.threat);
+  const activeThreatObjects = currentActiveDetections.filter((d) => d.threat);
   const highThreatsCount = activeThreatObjects.filter((t) => t.threat_level === 'HIGH' || t.threat_level === 'CRITICAL').length;
   const medThreatsCount = activeThreatObjects.filter((t) => t.threat_level === 'MEDIUM' || t.threat_level === 'LOW').length;
 
-  // Target summary: only real detections when video is running, never fake defaults
-  const targetSummaryList = (isVideoRunning && latestDetections.length > 0)
-    ? latestDetections.slice(0, 4).map((d) => ({
-        track_id: d.track_id != null && d.track_id > 0 ? d.track_id : 1,
+  // Target summary: only real detections when video is actively processing or paused
+  const targetSummaryList = (isVideoActive && currentActiveDetections.length > 0)
+    ? currentActiveDetections.map((d, idx) => ({
+        track_id: d.track_id != null && d.track_id > 0 ? d.track_id : idx + 1,
+        id: d.id || `target-${d.track_id || idx + 1}-${idx}`,
         class: (d.class || 'Target').replace(/_/g, ' '),
         confidence: d.confidence || 0.90,
         speed: d.speed || 0.0,
@@ -121,10 +127,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
     : [];
 
   // Active surveillance session determination
-  const isSessionActive = isVideoRunning || isVideoPaused;
+  const hasSession = Boolean(videoStatus?.video_id && videoStatus.status !== 'no_video_selected');
 
-  // Recent Activity displays ONLY events generated during the current surveillance session
-  const timelineEvents = isSessionActive && currentSessionEvents ? currentSessionEvents : [];
+  // Recent Activity displays real session events and remains visible after video completion
+  const timelineEvents = hasSession && currentSessionEvents && currentSessionEvents.length > 0
+    ? currentSessionEvents
+    : [];
 
   // Subsystem services state (truthful and examiner-friendly)
   const subsystems = [
@@ -321,7 +329,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             {/* Thermal Stream Viewport Canvas */}
             <div className="w-full max-w-full overflow-hidden rounded-xl border border-[var(--border-subtle)]">
               <ThermalCanvas
-                detections={isPaused || !isVideoRunning ? [] : latestDetections}
+                detections={!isVideoActive || isPaused ? [] : currentActiveDetections}
                 zones={[]}
                 width={800}
                 height={450}
@@ -338,7 +346,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
         {/* RIGHT: 3D TACTICAL RADAR (~32% WIDTH, 4 COLS) */}
         <div className="lg:col-span-4 w-full max-w-full min-w-0">
-          <TacticalRadar3D detections={latestDetections} isDemo={!isVideoRunning} className="w-full shadow-lg" />
+          <TacticalRadar3D detections={currentActiveDetections} isDemo={false} className="w-full shadow-lg" />
         </div>
       </div>
 
@@ -373,9 +381,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </div>
               </div>
             ) : (
-              timelineEvents.map((evt) => (
+              timelineEvents.map((evt, idx) => (
                 <div
-                  key={evt.id}
+                  key={`${evt.id || 'evt'}-${idx}`}
                   className={`p-2.5 rounded-xl border text-xs font-sans transition-all flex items-start space-x-2.5 ${
                     evt.severity === 'HIGH' || evt.severity === 'CRITICAL'
                       ? 'bg-[var(--threat-coral)]/10 border-[var(--threat-coral)]/25 text-[var(--threat-coral)]'
@@ -410,8 +418,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
           <div className="pt-2 border-t border-[var(--border-subtle)] text-[10px] font-mono text-[var(--text-muted)] flex justify-between">
             <span>CURRENT SESSION</span>
-            <span className={isSessionActive ? "text-[var(--operational-green)] font-semibold" : "text-[var(--text-muted)]"}>
-              {isSessionActive ? "ACTIVE MONITORING" : "IDLE"}
+            <span className={isVideoRunning ? "text-[var(--operational-green)] font-semibold" : isVideoPaused ? "text-amber-400 font-semibold" : isVideoCompleted ? "text-[var(--thermal-cyan)] font-semibold" : "text-[var(--text-muted)]"}>
+              {isVideoRunning ? "ACTIVE MONITORING" : isVideoPaused ? "PAUSED" : isVideoCompleted ? "SESSION COMPLETED" : "IDLE"}
             </span>
           </div>
         </Card>
@@ -422,7 +430,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div className="flex items-center space-x-2 min-w-0">
               <Crosshair className="w-4 h-4 text-[var(--thermal-cyan)] shrink-0" />
               <h3 className="text-xs font-bold text-[var(--text-primary)] font-sans uppercase tracking-wider truncate">
-                ACTIVE TARGETS ({targetSummaryList.length})
+                ACTIVE TARGETS ({currentActiveDetections.length})
               </h3>
             </div>
             <button
@@ -443,9 +451,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </div>
               </div>
             ) : (
-              targetSummaryList.map((target) => (
+              targetSummaryList.map((target, idx) => (
                 <div
-                  key={target.track_id}
+                  key={`${target.id || target.track_id}-${idx}`}
                   onClick={() => onNavigate('tracking')}
                   className="p-2.5 rounded-xl bg-[var(--bg-surface-secondary)] border border-[var(--border-subtle)] hover:border-[var(--border-hover)] transition-all cursor-pointer flex items-center justify-between gap-2"
                 >

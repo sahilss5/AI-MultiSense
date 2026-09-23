@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Zone, ThreatLevel } from '../types/schema';
+import { Zone, ThreatLevel, ThermalDetectionObject } from '../types/schema';
 import { apiService } from '../services/api';
 import { Card } from '../components/common/Card';
 import { Badge } from '../components/common/Badge';
@@ -57,7 +57,11 @@ export interface EnhancedZone extends Zone {
   history: { time: string; text: string; threat?: boolean }[];
 }
 
-export const RestrictedZones: React.FC = () => {
+export interface RestrictedZonesProps {
+  detections?: ThermalDetectionObject[];
+}
+
+export const RestrictedZones: React.FC<RestrictedZonesProps> = ({ detections = [] }) => {
   const [zones, setZones] = useState<EnhancedZone[]>([]);
   const [activeZoneId, setActiveZoneId] = useState<string>('zone-1');
   const [isDrawingMode, setIsDrawingMode] = useState<boolean>(false);
@@ -96,7 +100,7 @@ export const RestrictedZones: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Baseline Demo Zones
+  // Baseline Demo Zones (Truthful Initial State without hardcoded phantom intruders)
   const demoZones: EnhancedZone[] = useMemo(
     () => [
       {
@@ -113,18 +117,8 @@ export const RestrictedZones: React.FC = () => {
           [0.54, 0.92],
         ],
         monitoredClasses: ['Person', 'Drone', 'Person With Bag'],
-        targetsInside: [
-          {
-            track_id: 31,
-            class: 'Person With Bag',
-            threat: true,
-            threat_level: 'CRITICAL',
-            speed: 3.8,
-            entered_at: '20:42:18 IST',
-          },
-        ],
+        targetsInside: [],
         history: [
-          { time: '20:42:18 IST', text: 'T-031 Person With Bag breached perimeter (Intrusion Alarm)', threat: true },
           { time: '20:39:10 IST', text: 'Zone armed by Automated Rule Engine', threat: false },
           { time: '20:35:00 IST', text: 'Baseline perimeter calibrated at 100% sensitivity', threat: false },
         ],
@@ -143,67 +137,31 @@ export const RestrictedZones: React.FC = () => {
           [0.38, 0.88],
         ],
         monitoredClasses: ['Vehicle'],
-        targetsInside: [
-          {
-            track_id: 18,
-            class: 'Vehicle',
-            threat: true,
-            threat_level: 'HIGH',
-            speed: 65.0,
-            entered_at: '20:41:52 IST',
-          },
-        ],
+        targetsInside: [],
         history: [
-          { time: '20:41:52 IST', text: 'T-018 Vehicle exceeded speed limit (65 km/h vs 40 km/h)', threat: true },
           { time: '20:40:00 IST', text: 'Speed radar enforcement loop active', threat: false },
-        ],
-      },
-      {
-        id: 'zone-3',
-        name: 'Sector Alpha-4 Buffer',
-        type: 'MONITORING',
-        severity: 'LOW',
-        enabled: true,
-        speedLimit: 60,
-        polygon: [
-          [0.10, 0.15],
-          [0.34, 0.12],
-          [0.36, 0.55],
-          [0.12, 0.58],
-        ],
-        monitoredClasses: ['Person', 'Animal', 'Drone'],
-        targetsInside: [
-          {
-            track_id: 24,
-            class: 'Person',
-            threat: false,
-            threat_level: 'LOW',
-            speed: 4.2,
-            entered_at: '20:41:54 IST',
-          },
-        ],
-        history: [
-          { time: '20:41:54 IST', text: 'T-024 Person entered monitoring buffer', threat: false },
-          { time: '20:30:00 IST', text: 'Buffer sector clear and operational', threat: false },
         ],
       },
     ],
     []
   );
 
-  // Fetch or Load Baseline
+  // Fetch or Load Baseline from Backend DB
   const fetchZones = async () => {
     try {
       const data = await apiService.getZones();
-      if (Array.isArray(data)) {
-        const mapped: EnhancedZone[] = data.map((z, idx) => ({
+      if (Array.isArray(data) && data.length > 0) {
+        const sanitized = data.filter((z) => z.name !== 'Sector Alpha-4 Buffer');
+        const mapped: EnhancedZone[] = sanitized.map((z, idx) => ({
           ...z,
+          name: z.name.includes('Zone A') || z.name.includes('Bravo') ? 'Restricted Storage Bravo' :
+                z.name.includes('Zone B') || z.name.includes('Perimeter') ? 'Perimeter Access Road' : z.name,
           enabled: z.enabled !== undefined ? z.enabled : true,
-          type: (z as any).type || (idx === 0 ? 'RESTRICTED' : (idx === 1 ? 'PERIMETER' : 'MONITORING')),
+          type: (z as any).type || (idx === 0 ? 'RESTRICTED' : (idx === 1 ? 'VEHICLE_CONTROL' : 'PERIMETER')),
           severity: (z as any).severity || (idx === 0 ? 'CRITICAL' : (idx === 1 ? 'HIGH' : 'LOW')),
           monitoredClasses: (z as any).monitoredClasses || (idx === 1 ? ['Vehicle'] : ['Person', 'Drone']),
           targetsInside: [],
-          history: [{ time: formatIST(new Date(), { includeTimeOnly: true }), text: 'Zone geofence synchronized with backend' }],
+          history: (z as any).history || [{ time: formatIST(new Date(), { includeTimeOnly: true }), text: 'Zone geofence synchronized with backend' }],
         }));
         setZones(mapped);
       } else {
@@ -219,9 +177,64 @@ export const RestrictedZones: React.FC = () => {
     fetchZones();
   }, []);
 
+  // Ray-Casting 2D Point-in-Polygon Check
+  const isPointInPolygon = (point: [number, number], polygon: [number, number][]): boolean => {
+    if (!polygon || polygon.length < 3) return false;
+    const [x, y] = point;
+    let inside = false;
+    const n = polygon.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const [xi, yi] = polygon[i];
+      const [xj, yj] = polygon[j];
+      const intersect = ((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+
+  // Derive Live Zones with Truthful Target Occupancy and Intrusion Detection
+  const liveZones = useMemo<EnhancedZone[]>(() => {
+    return zones.map((zone) => {
+      const targetsInside = (detections || []).filter((d) => {
+        if (!d.bbox || d.bbox.length < 4) return false;
+        const cx = (d.bbox[0] + d.bbox[2]) / 2;
+        const cy = (d.bbox[1] + d.bbox[3]) / 2;
+        const matchesZoneName = Boolean(
+          d.zone && (
+            d.zone === zone.name ||
+            (zone.name.includes('Bravo') && d.zone.includes('Zone A')) ||
+            (zone.name.includes('Perimeter') && d.zone.includes('Zone B'))
+          )
+        );
+        return matchesZoneName || isPointInPolygon([cx, cy], zone.polygon);
+      }).map((d) => {
+        const isVehicleControl = zone.type === 'VEHICLE_CONTROL';
+        const isSpeedViolation = isVehicleControl && (
+          Boolean(d.threat) || (d.speed != null && zone.speedLimit != null && d.speed > zone.speedLimit)
+        );
+        const isRestrictedBreach = zone.type === 'RESTRICTED' && zone.enabled;
+        const isThreat = Boolean(d.threat || isSpeedViolation || isRestrictedBreach);
+
+        return {
+          track_id: d.track_id,
+          class: (d.class_name || d.class || 'Target').replace(/_/g, ' '),
+          threat: isThreat,
+          threat_level: (d.threat_level as ThreatLevel) || (isThreat ? (zone.severity || 'HIGH') : 'LOW'),
+          speed: d.speed != null ? d.speed : 0,
+          entered_at: d.timestamp ? formatIST(d.timestamp, { includeTimeOnly: true }) : formatIST(new Date(), { includeTimeOnly: true }),
+        };
+      });
+
+      return {
+        ...zone,
+        targetsInside,
+      };
+    });
+  }, [zones, detections]);
+
   // Filtered Zones List
   const filteredZones = useMemo(() => {
-    return zones.filter((z) => {
+    return liveZones.filter((z) => {
       if (filterType !== 'ALL' && z.type !== filterType) return false;
       if (filterStatus === 'ACTIVE' && !z.enabled) return false;
       if (filterStatus === 'DISABLED' && z.enabled) return false;
@@ -237,19 +250,19 @@ export const RestrictedZones: React.FC = () => {
 
       return true;
     });
-  }, [zones, filterType, filterStatus, searchQuery]);
+  }, [liveZones, filterType, filterStatus, searchQuery]);
 
   const selectedZone =
-    zones.find((z) => z.id === activeZoneId) ||
+    liveZones.find((z) => z.id === activeZoneId) ||
     filteredZones[0] ||
-    zones[0];
+    liveZones[0];
 
-  // Global Statistics
-  const totalZonesCount = zones.length;
-  const activeZonesCount = zones.filter((z) => z.enabled).length;
-  const totalTargetsInside = zones.reduce((acc, z) => acc + (z.targetsInside?.length || 0), 0);
-  const totalIntrusions = zones.reduce(
-    (acc, z) => acc + (z.targetsInside?.filter((t) => t.threat).length || 0),
+  // Global Statistics Reflecting Genuine Active Intrusion States
+  const totalZonesCount = liveZones.length;
+  const activeZonesCount = liveZones.filter((z) => z.enabled).length;
+  const totalTargetsInside = liveZones.reduce((acc, z) => acc + (z.targetsInside?.length || 0), 0);
+  const totalIntrusions = liveZones.reduce(
+    (acc, z) => acc + (z.enabled && z.targetsInside?.some((t) => t.threat) ? 1 : 0),
     0
   );
 
@@ -426,10 +439,10 @@ export const RestrictedZones: React.FC = () => {
     }
 
     // Render Saved Zones
-    zones.forEach((zone) => {
+    liveZones.forEach((zone) => {
       if (!zone.polygon || zone.polygon.length < 3) return;
       const isSelected = zone.id === selectedZone?.id;
-      const hasIntrusion = zone.targetsInside?.some((t) => t.threat);
+      const hasIntrusion = zone.enabled && zone.targetsInside?.some((t) => t.threat);
 
       ctx.beginPath();
       const first = zone.polygon[0];
@@ -474,7 +487,7 @@ export const RestrictedZones: React.FC = () => {
       ctx.fillStyle = hasIntrusion ? '#F27786' : '#FFFFFF';
       ctx.font = 'bold 11px "JetBrains Mono", monospace';
       ctx.fillText(
-        `${zone.name.toUpperCase()} [${hasIntrusion ? '⚠ INTRUSION' : zone.enabled ? 'ACTIVE' : 'DISABLED'}]`,
+        `${zone.name.toUpperCase()} [${hasIntrusion ? '⚠ INTRUSION' : zone.enabled ? 'ARMED' : 'DISABLED'}]`,
         first[0] * width + 10,
         first[1] * height + 20
       );
@@ -505,27 +518,30 @@ export const RestrictedZones: React.FC = () => {
       });
     }
 
-    // Render Thermal Target Markers on Map
-    if (showTargets) {
-      const targets = [
-        { track_id: 31, cls: 'Person With Bag', x: 0.68, y: 0.66, threat: true },
-        { track_id: 18, cls: 'Vehicle', x: 0.43, y: 0.52, threat: true },
-        { track_id: 24, cls: 'Person', x: 0.22, y: 0.36, threat: false },
-        { track_id: 7, cls: 'Drone', x: 0.76, y: 0.22, threat: false },
-      ];
+    // Render Real Thermal Target Markers on Map
+    if (showTargets && detections && detections.length > 0) {
+      const targets = detections.map((d) => ({
+        track_id: d.track_id,
+        cls: (d.class_name || d.class || 'Target').replace(/_/g, ' '),
+        x: (d.bbox[0] + d.bbox[2]) / 2,
+        y: (d.bbox[1] + d.bbox[3]) / 2,
+        threat: Boolean(d.threat),
+        trajectory: d.trajectory,
+      }));
 
       targets.forEach((t) => {
         const tx = t.x * width;
         const ty = t.y * height;
 
         // Breadcrumb Trail
-        if (showTrajectories) {
+        if (showTrajectories && t.trajectory && t.trajectory.length > 1) {
           ctx.strokeStyle = t.threat ? 'rgba(242, 119, 134, 0.4)' : 'rgba(85, 217, 245, 0.4)';
           ctx.lineWidth = 1.5;
           ctx.beginPath();
-          ctx.moveTo(tx - 24, ty + 18);
-          ctx.lineTo(tx - 12, ty + 9);
-          ctx.lineTo(tx, ty);
+          ctx.moveTo(t.trajectory[0][0] * width, t.trajectory[0][1] * height);
+          for (let i = 1; i < t.trajectory.length; i++) {
+            ctx.lineTo(t.trajectory[i][0] * width, t.trajectory[i][1] * height);
+          }
           ctx.stroke();
         }
 
@@ -562,7 +578,7 @@ export const RestrictedZones: React.FC = () => {
       ctx.font = 'bold 10px "JetBrains Mono", monospace';
       ctx.fillText('CAM-01 [FLIR LWIR]', cx + 12, cy + 4);
     }
-  }, [zones, selectedZone, drawingPoints, showTargets, showGrid, showCameras, showTrajectories]);
+  }, [liveZones, selectedZone, drawingPoints, showTargets, showGrid, showCameras, showTrajectories, detections]);
 
   return (
     <motion.div
@@ -729,7 +745,8 @@ export const RestrictedZones: React.FC = () => {
               ) : (
                 filteredZones.map((zone) => {
                   const isSelected = selectedZone?.id === zone.id;
-                  const hasIntrusion = zone.targetsInside?.some((t) => t.threat);
+                  const hasIntrusion = zone.enabled && zone.targetsInside?.some((t) => t.threat);
+                  const violatingTarget = zone.targetsInside?.find((t) => t.threat) || zone.targetsInside?.[0];
 
                   return (
                     <motion.div
@@ -737,17 +754,20 @@ export const RestrictedZones: React.FC = () => {
                       onClick={() => setActiveZoneId(zone.id)}
                       whileHover={{ x: 2 }}
                       className={`p-3 rounded-xl border transition-all cursor-pointer space-y-2.5 ${
-                        isSelected
-                          ? hasIntrusion
-                            ? 'bg-[#1D0A0F] border-[var(--threat-coral)] shadow-md shadow-[var(--threat-coral)]/20'
-                            : 'bg-[#0A1422] border-[var(--thermal-cyan)] shadow-md'
+                        hasIntrusion
+                          ? 'bg-[#1D0A0F] border-[var(--threat-coral)] shadow-md shadow-[var(--threat-coral)]/20'
+                          : isSelected
+                          ? 'bg-[#0A1422] border-[var(--thermal-cyan)] shadow-md'
                           : 'bg-[var(--bg-surface-secondary)] border-[var(--border-subtle)] hover:border-[var(--border-hover)]'
                       }`}
                     >
                       <div className="flex items-center justify-between">
-                        <span className="font-bold text-xs text-[var(--text-primary)] font-sans truncate">{zone.name}</span>
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <Map className={`w-3.5 h-3.5 shrink-0 ${hasIntrusion ? 'text-[var(--threat-coral)]' : 'text-[var(--thermal-cyan)]'}`} />
+                          <span className="font-bold text-xs text-[var(--text-primary)] font-sans truncate">{zone.name}</span>
+                        </div>
                         <Badge variant={hasIntrusion ? 'red' : zone.enabled ? 'emerald' : 'slate'}>
-                          {hasIntrusion ? '⚠ Intrusion' : zone.enabled ? 'Active' : 'Disabled'}
+                          {hasIntrusion ? '⚠ INTRUSION' : zone.enabled ? 'ARMED' : 'DEACTIVATED'}
                         </Badge>
                       </div>
 
@@ -763,6 +783,15 @@ export const RestrictedZones: React.FC = () => {
                           </span>
                         </div>
                       </div>
+
+                      {hasIntrusion && violatingTarget && (
+                        <div className="text-[10px] font-mono text-[var(--threat-coral)] bg-[var(--threat-coral)]/10 px-2 py-1 rounded border border-[var(--threat-coral)]/30 flex items-center justify-between">
+                          <span className="truncate">Target: {violatingTarget.class}</span>
+                          {violatingTarget.speed > 0 && (
+                            <span className="shrink-0">{violatingTarget.speed} km/h</span>
+                          )}
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between pt-1 border-t border-white/[0.04] text-[11px] font-sans">
                         <button
@@ -920,8 +949,8 @@ export const RestrictedZones: React.FC = () => {
                 </h3>
               </div>
               {selectedZone && (
-                <Badge variant={selectedZone.targetsInside?.some((t) => t.threat) ? 'red' : 'emerald'}>
-                  {selectedZone.targetsInside?.some((t) => t.threat) ? '⚠ INTRUSION' : 'ACTIVE'}
+                <Badge variant={selectedZone.enabled && selectedZone.targetsInside?.some((t) => t.threat) ? 'red' : selectedZone.enabled ? 'emerald' : 'slate'}>
+                  {selectedZone.enabled && selectedZone.targetsInside?.some((t) => t.threat) ? '⚠ INTRUSION' : selectedZone.enabled ? 'ARMED' : 'DEACTIVATED'}
                 </Badge>
               )}
             </div>

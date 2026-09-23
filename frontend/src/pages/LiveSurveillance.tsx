@@ -54,13 +54,26 @@ interface LiveSurveillanceProps {
   zones: Zone[];
   videoStatus: VideoStatusResponse;
   onRefreshStatus: () => void;
+  selectedTrackId?: number | null;
+  onSelectTrackId?: (trackId: number | null) => void;
 }
+
+export const parseCanonicalTrackId = (raw: any): number | null => {
+  if (raw == null) return null;
+  if (typeof raw === 'number') return isNaN(raw) ? null : raw;
+  const str = String(raw).trim();
+  const stripped = str.replace(/^T-?/i, '');
+  const parsed = parseInt(stripped, 10);
+  return isNaN(parsed) ? null : parsed;
+};
 
 export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
   detections,
   zones,
   videoStatus,
   onRefreshStatus,
+  selectedTrackId: propSelectedTrackId,
+  onSelectTrackId,
 }) => {
   // 1. Source selector order: 1. VIDEO FILE (Default), 2. THERMAL CAMERA, 3. DEMO FEED
   const [sourceMode, setSourceMode] = useState<VideoSourceMode>('video_file');
@@ -69,7 +82,51 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
   const [showTrackingIds, setShowTrackingIds] = useState<boolean>(true);
   const [thermalPalette, setThermalPalette] = useState<'ironbow' | 'white_hot' | 'black_hot' | 'rainbow'>('ironbow');
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.5);
-  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
+  
+  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(() => parseCanonicalTrackId(propSelectedTrackId));
+
+  // Synchronize when parent passes updated selectedTrackId
+  useEffect(() => {
+    if (propSelectedTrackId !== undefined) {
+      setSelectedTrackId(parseCanonicalTrackId(propSelectedTrackId));
+    }
+  }, [propSelectedTrackId]);
+
+  const currentCanonicalTrackId = parseCanonicalTrackId(selectedTrackId);
+
+  const handleSelectTrack = useCallback((trackId: any) => {
+    const tid = parseCanonicalTrackId(trackId);
+    setSelectedTrackId(tid);
+    onSelectTrackId?.(tid);
+  }, [onSelectTrackId]);
+
+  // Historical persistence: cache tracks so disappearing tracks retain last known telemetry
+  const lastKnownTracksRef = useRef<Map<number, ThermalDetectionObject>>(new Map());
+
+  useEffect(() => {
+    detections.forEach((det) => {
+      const tid = parseCanonicalTrackId(det.track_id);
+      if (tid != null && tid > 0) {
+        lastKnownTracksRef.current.set(tid, {
+          ...det,
+          track_id: tid,
+          class: det.class || (det as any).class_name || 'Target',
+        });
+      }
+    });
+  }, [detections]);
+
+  // Session isolation: reset selection when session/video changes
+  const lastSessionKeyRef = useRef<string>('');
+  useEffect(() => {
+    const currentSessionKey = `${videoStatus.video_id || ''}-${videoStatus.session_start_time || ''}`;
+    if (lastSessionKeyRef.current && lastSessionKeyRef.current !== currentSessionKey) {
+      handleSelectTrack(null);
+      lastKnownTracksRef.current.clear();
+      seenTracksRef.current.clear();
+    }
+    lastSessionKeyRef.current = currentSessionKey;
+  }, [videoStatus.video_id, videoStatus.session_start_time, handleSelectTrack]);
   const [isFeedPaused, setIsFeedPaused] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<{ title: string; time: string; isThreat?: boolean } | null>(null);
@@ -144,13 +201,23 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
   const recordingCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const snapshotFnRef = useRef<(() => string | null) | null>(null);
 
-  const filteredDetections = detections.filter(
-    (d) => d.confidence >= confidenceThreshold
-  );
+  const filteredDetections = detections.filter((d) => {
+    const tid = parseCanonicalTrackId(d.track_id);
+    return tid != null && tid > 0 && d.confidence >= confidenceThreshold;
+  });
 
-  // Target selection (only when explicitly chosen by operator, else shows empty state)
-  const selectedTarget =
-    filteredDetections.find((d) => d.track_id === selectedTrackId) || null;
+  // Target selection & historical retention
+  const liveTarget = currentCanonicalTrackId != null
+    ? (filteredDetections.find((d) => parseCanonicalTrackId(d.track_id) === currentCanonicalTrackId) ||
+       detections.find((d) => parseCanonicalTrackId(d.track_id) === currentCanonicalTrackId) || null)
+    : null;
+
+  const lastKnownTarget = currentCanonicalTrackId != null
+    ? (lastKnownTracksRef.current.get(currentCanonicalTrackId) || null)
+    : null;
+
+  const selectedTarget = liveTarget || lastKnownTarget || null;
+  const isSelectedTargetActive = Boolean(liveTarget);
 
   // Fullscreen Handler
   const toggleFullscreen = () => {
@@ -566,7 +633,8 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
 
       // 7. Clear active track selection & error messages
       seenTracksRef.current.clear();
-      setSelectedTrackId(null);
+      lastKnownTracksRef.current.clear();
+      handleSelectTrack(null);
       setFileError(null);
       addLiveEvent('VIDEO CLEARED', 'Surveillance feed reset', false);
 
@@ -602,6 +670,9 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
         videoElemRef.current.currentTime = 0;
       }
       await apiService.startVideoAnalysis(videoId);
+      seenTracksRef.current.clear();
+      lastKnownTracksRef.current.clear();
+      handleSelectTrack(null);
       addLiveEvent('VIDEO STARTED', 'Thermal analysis pipeline engaged', false);
       if (videoElemRef.current) {
         videoElemRef.current.playbackRate = playbackSpeed;
@@ -683,6 +754,8 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
       }
       await apiService.startVideoAnalysis(videoId);
       seenTracksRef.current.clear();
+      lastKnownTracksRef.current.clear();
+      handleSelectTrack(null);
       addLiveEvent('VIDEO RESTARTED', 'Analysis restarted from beginning', false);
       if (videoElemRef.current) {
         videoElemRef.current.playbackRate = 1;
@@ -1282,6 +1355,9 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
                 snapshotFnRef={snapshotFnRef}
                 isRecording={isRecording}
                 playbackRate={playbackSpeed}
+                status={status}
+                selectedTrackId={selectedTrackId}
+                onSelectTrack={(trackId) => handleSelectTrack(trackId)}
               />
             </div>
 
@@ -1314,7 +1390,7 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
         {/* RIGHT: TARGET INTELLIGENCE & TELEMETRY PANEL (28% / 4 Cols) */}
         <div className="lg:col-span-4 space-y-4 w-full max-w-full min-w-0">
           {/* 1. Target Inspector Panel */}
-          <Card className="p-4 space-y-3.5 w-full max-w-full min-w-0 bg-[#070B12] border-[var(--border-subtle)]">
+          <Card id="target-inspector-panel" className="p-4 space-y-3.5 w-full max-w-full min-w-0 bg-[#070B12] border-[var(--border-subtle)]">
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-2.5">
               <div className="flex items-center space-x-2 min-w-0">
                 <Crosshair className="w-4 h-4 text-[var(--thermal-cyan)] shrink-0" />
@@ -1323,70 +1399,120 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
                 </h3>
               </div>
               {selectedTarget && (
-                <Badge variant={selectedTarget.threat ? 'red' : 'emerald'}>
-                  {selectedTarget.threat ? 'THREAT' : 'NORMAL'}
-                </Badge>
+                <div className="flex items-center space-x-2">
+                  <Badge variant={isSelectedTargetActive ? (selectedTarget.threat ? 'red' : 'emerald') : 'amber'}>
+                    {isSelectedTargetActive ? (selectedTarget.threat ? 'THREAT' : 'NORMAL') : 'INACTIVE'}
+                  </Badge>
+                  <button
+                    onClick={() => handleSelectTrack(null)}
+                    title="Deselect Target"
+                    className="p-1 rounded-md hover:bg-white/10 text-[var(--text-muted)] hover:text-white transition-colors cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               )}
             </div>
 
             {selectedTarget ? (
               <div className="space-y-2 font-sans text-xs">
+                {/* Active Status vs Track No Longer Active Banner */}
+                {isSelectedTargetActive ? (
+                  <div className="p-2 bg-[var(--operational-green)]/10 border border-[var(--operational-green)]/30 rounded-xl flex items-center justify-between text-xs">
+                    <span className="text-[var(--operational-green)] font-bold tracking-wide font-mono flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-[var(--operational-green)] pulse-live" />
+                      LIVE BYTE TRACK TARGET
+                    </span>
+                    <span className="text-[10px] text-[var(--thermal-cyan)] font-mono">STREAMING</span>
+                  </div>
+                ) : (
+                  <div className="p-2.5 bg-[var(--warning-amber)]/10 border border-[var(--warning-amber)]/30 rounded-xl flex items-center justify-between text-xs">
+                    <span className="text-[var(--warning-amber)] font-bold tracking-wide font-mono flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-[var(--warning-amber)]" />
+                      TRACK NO LONGER ACTIVE
+                    </span>
+                    <span className="text-[10px] text-[var(--text-muted)] font-mono">LAST KNOWN</span>
+                  </div>
+                )}
+
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)] font-mono">TRACK ID:</span>
+                  <span className="text-[var(--text-muted)] font-mono">TARGET ID:</span>
                   <span className="text-[var(--thermal-cyan)] font-mono font-bold text-sm">
-                    T-{selectedTarget.track_id != null ? selectedTarget.track_id : '---'}
+                    T-{parseCanonicalTrackId(selectedTarget.track_id) ?? '---'}
                   </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
                   <span className="text-[var(--text-muted)]">CLASS:</span>
-                  <span className="text-[var(--text-primary)] font-bold uppercase">{selectedTarget.class}</span>
+                  <span className="text-[var(--text-primary)] font-bold uppercase">
+                    {(selectedTarget.class || (selectedTarget as any).class_name || 'TARGET').replace(/_/g, ' ')}
+                  </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">AI CONFIDENCE:</span>
+                  <span className="text-[var(--text-muted)]">CONFIDENCE:</span>
                   <span className="text-[var(--operational-green)] font-mono font-bold">
-                    {(selectedTarget.confidence * 100).toFixed(1)}%
+                    {((selectedTarget.confidence ?? 0) * 100).toFixed(1)}%
                   </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
                   <span className="text-[var(--text-muted)]">STATUS:</span>
                   <span className={`font-mono font-bold uppercase ${selectedTarget.threat ? 'text-[var(--threat-coral)]' : 'text-[var(--operational-green)]'}`}>
-                    {selectedTarget.threat ? 'THREAT' : 'NORMAL'}
+                    {selectedTarget.threat ? `THREAT / ${selectedTarget.threat_level || 'HIGH'}` : 'NORMAL'}
                   </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">THREAT LEVEL:</span>
-                  <span className={`font-mono font-bold uppercase ${selectedTarget.threat ? 'text-[var(--threat-coral)]' : 'text-[var(--text-secondary)]'}`}>
-                    {selectedTarget.threat_level || (selectedTarget.threat ? 'HIGH' : 'LOW')}
+                  <span className="text-[var(--text-muted)]">TRACKING:</span>
+                  <span className="text-[var(--thermal-cyan)] font-mono font-semibold">
+                    ByteTrack
                   </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">REASON:</span>
-                  <span className="text-[var(--text-primary)] font-medium text-right truncate max-w-[180px]" title={selectedTarget.threat_reason || (selectedTarget.threat ? 'Threat detected' : 'Standard thermal track')}>
-                    {selectedTarget.threat_reason || (selectedTarget.threat ? 'Threat detected' : 'Standard thermal track')}
+                  <span className="text-[var(--text-muted)]">SPEED:</span>
+                  <span className="text-[var(--warning-amber)] font-mono font-bold">
+                    {selectedTarget.speed != null && selectedTarget.speed > 0 ? `${selectedTarget.speed.toFixed(1)} km/h` : 'STATIONARY'}
                   </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
                   <span className="text-[var(--text-muted)]">ZONE:</span>
                   <span className="text-[var(--thermal-cyan)] font-mono font-medium">
-                    {selectedTarget.zone || 'N/A'}
+                    {selectedTarget.zone || 'None'}
                   </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">ESTIMATED SPEED:</span>
-                  <span className="text-[var(--warning-amber)] font-mono font-bold">
-                    {selectedTarget.speed != null && selectedTarget.speed > 0 ? `${selectedTarget.speed.toFixed(1)} km/h` : 'N/A'}
+                  <span className="text-[var(--text-muted)]">DIRECTION:</span>
+                  <span className="text-[var(--text-primary)] font-mono font-medium">
+                    {selectedTarget.direction || 'STATIONARY'}
                   </span>
                 </div>
 
                 <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">TIMESTAMP:</span>
+                  <span className="text-[var(--text-muted)]">
+                    {isSelectedTargetActive ? 'POSITION:' : 'LAST KNOWN POSITION:'}
+                  </span>
+                  <span className="text-[var(--text-secondary)] font-mono text-right truncate max-w-[200px]">
+                    {selectedTarget.bbox && Array.isArray(selectedTarget.bbox) && selectedTarget.bbox.length === 4
+                      ? `X: ${(((selectedTarget.bbox[0] + selectedTarget.bbox[2]) / 2)).toFixed(2)}, Y: ${(((selectedTarget.bbox[1] + selectedTarget.bbox[3]) / 2)).toFixed(2)}`
+                      : (selectedTarget as any).last_position
+                      ? `X: ${((selectedTarget as any).last_position.x).toFixed(2)}, Y: ${((selectedTarget as any).last_position.y).toFixed(2)}`
+                      : 'N/A'}
+                  </span>
+                </div>
+
+                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                  <span className="text-[var(--text-muted)]">THREAT REASON:</span>
+                  <span className="text-[var(--text-primary)] font-medium text-right truncate max-w-[180px]" title={selectedTarget.threat_reason || (selectedTarget.threat ? 'Threat detected' : 'None')}>
+                    {selectedTarget.threat_reason || (selectedTarget.threat ? 'Threat detected' : 'None')}
+                  </span>
+                </div>
+
+                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
+                  <span className="text-[var(--text-muted)]">LAST SEEN:</span>
                   <span className="text-[var(--text-secondary)] font-mono">
                     {selectedTarget.timestamp ? (selectedTarget.timestamp.includes('T') ? formatIST(new Date(selectedTarget.timestamp), { includeTimeOnly: true }) : selectedTarget.timestamp) : 'LIVE'}
                   </span>
@@ -1416,35 +1542,50 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
                   <div className="text-[11px] text-[var(--text-muted)]">Waiting for thermal detections...</div>
                 </div>
               ) : (
-                filteredDetections.map((det) => (
-                  <div
-                    key={det.id || det.track_id}
-                    onClick={() => setSelectedTrackId(det.track_id)}
-                    className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between text-xs font-sans ${
-                      selectedTrackId === det.track_id
-                        ? 'bg-[var(--thermal-cyan)]/15 border-[var(--thermal-cyan)]/40 text-[var(--text-primary)] shadow-sm'
-                        : 'bg-[var(--bg-surface-secondary)] border-[var(--border-subtle)] hover:border-[var(--border-hover)] text-[var(--text-secondary)]'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-2.5 min-w-0">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${det.threat ? 'bg-[var(--threat-coral)] pulse-live' : 'bg-[var(--operational-green)]'}`} />
-                      <span className="font-mono font-bold text-[var(--thermal-cyan)] shrink-0">T-{det.track_id}</span>
-                      <span className="truncate font-semibold text-[var(--text-primary)] uppercase">{det.class}</span>
+                filteredDetections.map((det) => {
+                  const cTid = parseCanonicalTrackId(det.track_id);
+                  const isSelected = currentCanonicalTrackId != null && cTid === currentCanonicalTrackId;
+                  const displayClass = (det.class || (det as any).class_name || 'TARGET').replace(/_/g, ' ');
+                  return (
+                    <div
+                      key={`active-track-${cTid ?? det.id}`}
+                      id={`active-target-${cTid}`}
+                      onClick={() => handleSelectTrack(cTid ?? det.track_id)}
+                      onPointerDown={() => handleSelectTrack(cTid ?? det.track_id)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleSelectTrack(cTid ?? det.track_id);
+                        }
+                      }}
+                      className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between text-xs font-sans ${
+                        isSelected
+                          ? 'bg-[var(--thermal-cyan)]/15 border-[var(--thermal-cyan)]/60 text-[var(--text-primary)] shadow-[0_0_12px_rgba(85,217,245,0.2)]'
+                          : 'bg-[var(--bg-surface-secondary)] border-[var(--border-subtle)] hover:border-[var(--border-hover)] text-[var(--text-secondary)]'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-2.5 min-w-0">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${det.threat ? 'bg-[var(--threat-coral)] pulse-live' : 'bg-[var(--operational-green)]'}`} />
+                        <span className="font-mono font-bold text-[var(--thermal-cyan)] shrink-0">T-{cTid}</span>
+                        <span className="truncate font-semibold text-[var(--text-primary)] uppercase">{displayClass}</span>
+                      </div>
+                      <div className="flex items-center space-x-2 shrink-0">
+                        <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                          det.threat
+                            ? 'bg-[var(--threat-coral)]/15 text-[var(--threat-coral)] border border-[var(--threat-coral)]/30'
+                            : 'bg-[var(--operational-green)]/15 text-[var(--operational-green)] border border-[var(--operational-green)]/30'
+                        }`}>
+                          {det.threat ? `THREAT · ${det.threat_level || 'HIGH'}` : 'NORMAL'}
+                        </span>
+                        <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                          {((det.confidence ?? 0) * 100).toFixed(0)}%
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center space-x-2 shrink-0">
-                      <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                        det.threat
-                          ? 'bg-[var(--threat-coral)]/15 text-[var(--threat-coral)] border border-[var(--threat-coral)]/30'
-                          : 'bg-[var(--operational-green)]/15 text-[var(--operational-green)] border border-[var(--operational-green)]/30'
-                      }`}>
-                        {det.threat ? `THREAT · ${det.threat_level || 'HIGH'}` : 'NORMAL'}
-                      </span>
-                      <span className="text-[10px] font-mono text-[var(--text-muted)]">
-                        {(det.confidence * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </Card>

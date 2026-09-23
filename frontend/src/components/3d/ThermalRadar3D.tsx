@@ -144,7 +144,7 @@ export const ThermalRadar3D: React.FC<ThermalRadar3DProps> = ({
           });
 
           return {
-            id: d.id || `trk-${assignedTrackId}`,
+            id: d.id || `trk-${assignedTrackId}-${idx}`,
             trackId: assignedTrackId,
             trackCode: `T-${assignedTrackId}`,
             category: cat,
@@ -373,9 +373,9 @@ export const ThermalRadar3D: React.FC<ThermalRadar3DProps> = ({
           </svg>
 
           {/* 3D TRACKED TARGET OBJECTS */}
-          {tracks.map((trk) => {
-            const isHovered = hoveredTrack?.trackId === trk.trackId;
-            const hex = getTrackHex(trk);
+          {tracks.map((trk, idx) => {
+            const isHovered = hoveredTrack?.id === trk.id;
+            const hex = trk.threat ? '#FF5C5C' : '#55D9F5';
 
             // Coordinated position relative to camera center (300, 300)
             const groundX = 300 + trk.baseX * 165;
@@ -383,7 +383,7 @@ export const ThermalRadar3D: React.FC<ThermalRadar3DProps> = ({
 
             return (
               <div
-                key={trk.id}
+                key={`${trk.id}-${idx}`}
                 style={{
                   left: `${(groundX / 600) * 100}%`,
                   top: `${(groundY / 600) * 100}%`,
@@ -526,9 +526,9 @@ export const ThermalRadar3D: React.FC<ThermalRadar3DProps> = ({
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-24 overflow-y-auto pr-1">
-            {tracks.map((t) => (
+            {tracks.map((t, idx) => (
               <div
-                key={t.id}
+                key={`${t.id}-${idx}`}
                 onMouseEnter={() => setHoveredTrack(t)}
                 onMouseLeave={() => setHoveredTrack(null)}
                 className={`px-2 py-1 rounded-lg border flex items-center justify-between text-[10px] transition-colors cursor-pointer ${

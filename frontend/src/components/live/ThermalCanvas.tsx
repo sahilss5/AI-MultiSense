@@ -23,6 +23,8 @@ interface ThermalCanvasProps {
   playbackRate?: number;
   snapshotFnRef?: React.MutableRefObject<(() => string | null) | null>;
   status?: string;
+  selectedTrackId?: number | null;
+  onSelectTrack?: (trackId: number) => void;
 }
 
 interface TargetAnimState {
@@ -51,10 +53,11 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
   videoRef,
   canvasRef: externalCanvasRef,
   recordingCanvasRef,
-  isRecording = false,
   playbackRate = 1,
   snapshotFnRef,
   status,
+  selectedTrackId = null,
+  onSelectTrack,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const internalRecordingCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -66,6 +69,11 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
   const hoveredTrackIdRef = useRef<number | null>(null);
   const [hoveredTrackId, setHoveredTrackId] = useState<number | null>(null);
   const [tilt, setTilt] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const selectedTrackIdRef = useRef<number | null>(selectedTrackId);
+  useEffect(() => {
+    selectedTrackIdRef.current = selectedTrackId;
+  }, [selectedTrackId]);
 
   // Draw area reference for coordinate mapping
   const drawAreaRef = useRef<{ x: number; y: number; w: number; h: number }>({
@@ -245,6 +253,33 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
     }
   };
 
+  // Handle Canvas Click to Select Target from Bounding Box
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = ((e.clientX - rect.left) / rect.width) * width;
+    const mouseY = ((e.clientY - rect.top) / rect.height) * height;
+    const { x: drawX, y: drawY, w: drawW, h: drawH } = drawAreaRef.current;
+
+    for (const det of detections) {
+      const state = targetStateMapRef.current.get(det.track_id);
+      const currentBbox = state?.currentBbox || det.bbox;
+      const [x1, y1, x2, y2] = currentBbox;
+      const bx = drawX + x1 * drawW;
+      const by = drawY + y1 * drawH;
+      const bw = (x2 - x1) * drawW;
+      const bh = (y2 - y1) * drawH;
+
+      if (mouseX >= bx - 10 && mouseX <= bx + bw + 10 && mouseY >= by - 10 && mouseY <= by + bh + 10) {
+        if (det.track_id != null && det.track_id > 0) {
+          onSelectTrack?.(det.track_id);
+        }
+        break;
+      }
+    }
+  };
+
   const handleMouseLeave = () => {
     setTilt({ x: 0, y: 0 });
     if (hoveredTrackIdRef.current !== null) {
@@ -413,6 +448,7 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
         const targetConf = det.confidence;
         const isHovered = activeHoveredId === trackId;
         const hasActiveHover = activeHoveredId !== null;
+        const isSelected = selectedTrackIdRef.current != null && Number(selectedTrackIdRef.current) === Number(trackId);
 
         let animState = targetStateMapRef.current.get(trackId);
         if (!animState) {
@@ -526,15 +562,40 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
         ctx.fillStyle = heatGrad;
         ctx.fillRect(bx - 20, by - 20, bw + 40, bh + 40);
 
-        // Bounding Box
-        const lineOpacity = isHovered ? 0.95 : 0.8;
-        const fillOpacity = isHovered ? 0.14 : 0.05;
+        // Tactical Selection Reticle & Halo for Selected Target
+        if (isSelected) {
+          ctx.save();
+          ctx.strokeStyle = '#55D9F5';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 4]);
+          ctx.lineDashOffset = -(time * 15) % 8;
+          ctx.strokeRect(bx - 5, by - 5, bw + 10, bh + 10);
+          ctx.setLineDash([]);
 
-        ctx.fillStyle = `rgba(${rGba}, ${fillOpacity})`;
+          // Corner brackets
+          const selLen = Math.min(10, Math.min(bw, bh) * 0.3);
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = '#55D9F5';
+          // Top-Left
+          ctx.beginPath(); ctx.moveTo(bx - 7, by - 7 + selLen); ctx.lineTo(bx - 7, by - 7); ctx.lineTo(bx - 7 + selLen, by - 7); ctx.stroke();
+          // Top-Right
+          ctx.beginPath(); ctx.moveTo(bx + bw + 7 - selLen, by - 7); ctx.lineTo(bx + bw + 7, by - 7); ctx.lineTo(bx + bw + 7, by - 7 + selLen); ctx.stroke();
+          // Bottom-Left
+          ctx.beginPath(); ctx.moveTo(bx - 7, by + bh + 7 - selLen); ctx.lineTo(bx - 7, by + bh + 7); ctx.lineTo(bx - 7 + selLen, by + bh + 7); ctx.stroke();
+          // Bottom-Right
+          ctx.beginPath(); ctx.moveTo(bx + bw + 7 - selLen, by + bh + 7); ctx.lineTo(bx + bw + 7, by + bh + 7); ctx.lineTo(bx + bw + 7, by + bh + 7 - selLen); ctx.stroke();
+          ctx.restore();
+        }
+
+        // Bounding Box
+        const lineOpacity = isSelected ? 1.0 : isHovered ? 0.95 : 0.8;
+        const fillOpacity = isSelected ? 0.22 : isHovered ? 0.14 : 0.05;
+
+        ctx.fillStyle = isSelected ? 'rgba(85, 217, 245, 0.18)' : `rgba(${rGba}, ${fillOpacity})`;
         ctx.fillRect(bx, by, bw, bh);
 
-        ctx.strokeStyle = `rgba(${rGba}, ${lineOpacity})`;
-        ctx.lineWidth = isHovered ? 2 : 1.5;
+        ctx.strokeStyle = isSelected ? '#55D9F5' : `rgba(${rGba}, ${lineOpacity})`;
+        ctx.lineWidth = isSelected ? 2.5 : isHovered ? 2 : 1.5;
 
         const cLen = Math.min(bw, bh) * 0.25;
         ctx.beginPath(); ctx.moveTo(bx, by + cLen); ctx.lineTo(bx, by); ctx.lineTo(bx + cLen, by); ctx.stroke();
@@ -545,7 +606,8 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
         // Label Pill
         const confPercent = (animState.displayConf * 100).toFixed(1);
         const threatBadge = det.threat ? '⚠ THREAT: ' : '';
-        const labelText = `${threatBadge}TRACK #${det.track_id}  ${(det.class || 'OBJECT').toUpperCase()}  ${confPercent}%`;
+        const selectedIndicator = isSelected ? '⦿ ' : '';
+        const labelText = `${selectedIndicator}${threatBadge}TRACK #${det.track_id}  ${(det.class || 'OBJECT').toUpperCase()}  ${confPercent}%`;
         ctx.font = '600 10px "JetBrains Mono", monospace';
         const textMetrics = ctx.measureText(labelText);
         const textW = textMetrics.width + 14;
@@ -713,6 +775,19 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
           targetCtx.beginPath(); targetCtx.moveTo(bx, by + bh - cLen); targetCtx.lineTo(bx, by + bh); targetCtx.lineTo(bx + cLen, by + bh); targetCtx.stroke();
           targetCtx.beginPath(); targetCtx.moveTo(bx + bw - cLen, by + bh); targetCtx.lineTo(bx + bw, by + bh); targetCtx.lineTo(bx + bw, by + bh - cLen); targetCtx.stroke();
 
+          // Selection Halo if focused in Target Inspector
+          if (selectedTrackId != null && Number(det.track_id) === Number(selectedTrackId)) {
+            targetCtx.save();
+            targetCtx.strokeStyle = '#55D9F5';
+            targetCtx.lineWidth = 2.5;
+            targetCtx.setLineDash([4, 4]);
+            targetCtx.strokeRect(bx - 4, by - 4, bw + 8, bh + 8);
+            targetCtx.fillStyle = 'rgba(85, 217, 245, 0.12)';
+            targetCtx.fillRect(bx - 4, by - 4, bw + 8, bh + 8);
+            targetCtx.setLineDash([]);
+            targetCtx.restore();
+          }
+
           // STEPS 5, 6, 7: Label Pill (Track ID + Class + Confidence + Threat Level/Status)
           const confVal = animState ? animState.displayConf : (det.confidence || 0.85);
           const confPercent = (confVal * 100).toFixed(1);
@@ -846,6 +921,7 @@ export const ThermalCanvas: React.FC<ThermalCanvasProps> = ({
         height={height}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
+        onClick={handleCanvasClick}
         className="relative z-10 w-full h-auto block cursor-crosshair"
       />
 

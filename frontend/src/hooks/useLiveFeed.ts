@@ -18,6 +18,7 @@ export function useLiveFeed() {
       try {
         const ws = new WebSocket(WS_URL);
         wsRef.current = ws;
+        (window as any).__liveWs = ws;
 
         ws.onopen = () => {
           setIsConnected(true);

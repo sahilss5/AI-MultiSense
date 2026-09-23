@@ -242,7 +242,7 @@ Built with **React 18**, **TypeScript**, **Vite**, and **Tailwind CSS v4**, the 
 
 ### The 12 Integrated Modules
 1. **Command Overview (`Dashboard.tsx`):** Central security summary featuring real-time KPI cards, system status, active alerts, and recent surveillance events.
-2. **Live Surveillance (`LiveSurveillance.tsx`):** Real-time video player with HTML5 canvas bounding box overlays, track ID labels, live threat banners, and full video playback controls.
+2. **Live Surveillance (`LiveSurveillance.tsx`):** Real-time video player with HTML5 canvas bounding box overlays, track ID labels, live threat banners, real-time Live Detection Summary across all 5 model classes, active target buffer, session target history, and full video playback controls.
 3. **Target Tracking (`TargetTracking.tsx`):** Dedicated tracking monitor displaying active track IDs, motion vectors, centroid coordinates, and class breakdowns.
 4. **Threat Monitoring (`ThreatMonitoring.tsx`):** Incident response dashboard with dynamic threat queue, severity counters, and a simplified Surveillance Zone Map displaying active targets and restricted zones.
 5. **Restricted Zones (`RestrictedZones.tsx`):** Interactive canvas geofencing tool enabling security operators to draw, save, toggle, and delete polygon zones.
@@ -382,7 +382,8 @@ MAJOR_WEB - Copy/
 
 ### Step 1: Clone or Navigate to Project
 ```bash
-cd "D:\MAJOR_WEB - Copy"
+git clone https://github.com/sahilss5/AI-MultiSense.git
+cd AI-MultiSense
 ```
 
 ### Step 2: Set Up Backend

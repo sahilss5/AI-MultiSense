@@ -1,10 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ThermalDetectionObject, Zone, VideoStatusResponse } from '../types/schema';
+import { ThermalDetectionObject, Zone, VideoStatusResponse, SessionTrack } from '../types/schema';
 import { ThermalCanvas } from '../components/live/ThermalCanvas';
 import { Card } from '../components/common/Card';
 import { Badge } from '../components/common/Badge';
-import { SeverityIndicator } from '../components/common/SeverityIndicator';
 import { useThermalCamera, VideoSourceMode } from '../hooks/useThermalCamera';
 import { formatIST } from '../utils/date';
 import { apiService } from '../services/api';
@@ -12,7 +11,6 @@ import {
   Film,
   Camera,
   Radio,
-  Crosshair,
   Maximize2,
   Minimize2,
   Pause,
@@ -31,15 +29,31 @@ import {
   AlertTriangle,
   RotateCcw,
   Gauge,
-  Compass,
-  MapPin,
-  X,
   Trash2,
   Server,
   Zap,
   Check,
   Download,
 } from 'lucide-react';
+
+export const CANONICAL_MODEL_CLASSES = [
+  { key: 'person', label: 'PERSON' },
+  { key: 'vehicle', label: 'VEHICLE' },
+  { key: 'animal', label: 'ANIMAL' },
+  { key: 'drone', label: 'DRONE' },
+  { key: 'person_with_bag', label: 'PERSON WITH BAG' },
+] as const;
+
+export const normalizeCanonicalClass = (raw?: string | null): string => {
+  if (!raw) return '';
+  const s = String(raw).toLowerCase().trim().replace(/[\s-]+/g, '_');
+  if (s === 'person_with_bag' || s === 'bag' || s.includes('bag')) return 'person_with_bag';
+  if (s === 'person' || s === 'human') return 'person';
+  if (s === 'vehicle' || s === 'car' || s === 'truck' || s === 'bus') return 'vehicle';
+  if (s === 'animal' || s === 'dog' || s === 'cat') return 'animal';
+  if (s === 'drone' || s === 'uav') return 'drone';
+  return s;
+};
 
 interface ActivityEvent {
   id: string;
@@ -100,30 +114,100 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
     onSelectTrackId?.(tid);
   }, [onSelectTrackId]);
 
-  // Historical persistence: cache tracks so disappearing tracks retain last known telemetry
-  const lastKnownTracksRef = useRef<Map<number, ThermalDetectionObject>>(new Map());
+  // Historical session tracks persistence for Session Targets and completed session summary
+  const [sessionHistoricalTracks, setSessionHistoricalTracks] = useState<SessionTrack[]>([]);
 
+  // Synchronize live incoming ByteTrack detections into sessionHistoricalTracks
   useEffect(() => {
-    detections.forEach((det) => {
-      const tid = parseCanonicalTrackId(det.track_id);
-      if (tid != null && tid > 0) {
-        lastKnownTracksRef.current.set(tid, {
-          ...det,
-          track_id: tid,
-          class: det.class || (det as any).class_name || 'Target',
-        });
-      }
+    if (!detections || detections.length === 0) return;
+
+    setSessionHistoricalTracks((prev) => {
+      const map = new Map<number, any>();
+      prev.forEach((t) => {
+        const id = parseCanonicalTrackId(t.track_id);
+        if (id != null) map.set(id, t);
+      });
+      detections.forEach((det) => {
+        const tid = parseCanonicalTrackId(det.track_id);
+        if (tid != null && tid > 0) {
+          const existing = map.get(tid);
+          map.set(tid, {
+            ...existing,
+            ...det,
+            track_id: tid,
+            class: det.class || (det as any).class_name || existing?.class || 'Target',
+            class_name: (det as any).class_name || det.class || existing?.class_name || 'Target',
+            confidence: det.confidence ?? existing?.confidence ?? 0.9,
+            average_confidence: det.confidence ?? existing?.average_confidence ?? existing?.confidence ?? 0.9,
+            threat: Boolean(det.threat ?? existing?.threat),
+            threat_level: det.threat_level || existing?.threat_level || 'HIGH',
+            threat_reason: det.threat_reason || existing?.threat_reason || null,
+            speed: det.speed ?? existing?.speed ?? null,
+            zone: det.zone || existing?.zone || null,
+            direction: det.direction || existing?.direction || null,
+            bbox: det.bbox || existing?.bbox,
+            last_position: det.bbox
+              ? { x: (det.bbox[0] + det.bbox[2]) / 2, y: (det.bbox[1] + det.bbox[3]) / 2 }
+              : existing?.last_position || null,
+            timestamp: det.timestamp || existing?.timestamp || new Date().toISOString(),
+          });
+        }
+      });
+      return Array.from(map.values()).sort(
+        (a, b) => (parseCanonicalTrackId(a.track_id) || 0) - (parseCanonicalTrackId(b.track_id) || 0)
+      );
     });
   }, [detections]);
 
-  // Session isolation: reset selection when session/video changes
+  // Hydrate authentic completed session tracks from backend when video is completed or stopped
+  useEffect(() => {
+    if (videoStatus.status === 'completed' || videoStatus.status === 'stopped') {
+      const vid = videoStatus.video_id || undefined;
+      apiService
+        .getSessionSummary(vid)
+        .then((summary) => {
+          if (summary && summary.tracks && summary.tracks.length > 0) {
+            setSessionHistoricalTracks((prev) => {
+              const map = new Map<number, any>();
+              summary.tracks.forEach((t) => {
+                const tid = parseCanonicalTrackId(t.track_id);
+                if (tid != null && tid > 0) {
+                  const item = {
+                    ...t,
+                    track_id: tid,
+                    class: t.class || t.class_name || 'Target',
+                    class_name: t.class_name || t.class || 'Target',
+                  };
+                  map.set(tid, item);
+                }
+              });
+              // Keep any live accumulated tracks not yet committed
+              prev.forEach((t) => {
+                const tid = parseCanonicalTrackId(t.track_id);
+                if (tid != null && !map.has(tid)) {
+                  map.set(tid, t);
+                }
+              });
+              return Array.from(map.values()).sort(
+                (a, b) => (parseCanonicalTrackId(a.track_id) || 0) - (parseCanonicalTrackId(b.track_id) || 0)
+              );
+            });
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load session summary in LiveSurveillance:', err);
+        });
+    }
+  }, [videoStatus.status, videoStatus.video_id]);
+
+  // Session isolation: reset selection and historical tracks when session/video changes
   const lastSessionKeyRef = useRef<string>('');
   useEffect(() => {
     const currentSessionKey = `${videoStatus.video_id || ''}-${videoStatus.session_start_time || ''}`;
     if (lastSessionKeyRef.current && lastSessionKeyRef.current !== currentSessionKey) {
       handleSelectTrack(null);
-      lastKnownTracksRef.current.clear();
       seenTracksRef.current.clear();
+      setSessionHistoricalTracks([]);
     }
     lastSessionKeyRef.current = currentSessionKey;
   }, [videoStatus.video_id, videoStatus.session_start_time, handleSelectTrack]);
@@ -206,18 +290,69 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
     return tid != null && tid > 0 && d.confidence >= confidenceThreshold;
   });
 
-  // Target selection & historical retention
-  const liveTarget = currentCanonicalTrackId != null
-    ? (filteredDetections.find((d) => parseCanonicalTrackId(d.track_id) === currentCanonicalTrackId) ||
-       detections.find((d) => parseCanonicalTrackId(d.track_id) === currentCanonicalTrackId) || null)
-    : null;
+  // Live Detection Summary Calculations
+  const isStreamingLive = filteredDetections.length > 0;
+  const isSessionFinished = !isStreamingLive && sessionHistoricalTracks.length > 0;
+  const hasLiveOrSessionData = isStreamingLive || isSessionFinished;
 
-  const lastKnownTarget = currentCanonicalTrackId != null
-    ? (lastKnownTracksRef.current.get(currentCanonicalTrackId) || null)
-    : null;
+  // Active items: currently streaming detections or final completed session tracks
+  const summarySourceItems = isStreamingLive
+    ? filteredDetections
+    : isSessionFinished
+    ? sessionHistoricalTracks
+    : [];
 
-  const selectedTarget = liveTarget || lastKnownTarget || null;
-  const isSelectedTargetActive = Boolean(liveTarget);
+  const classCounts = CANONICAL_MODEL_CLASSES.reduce((acc, cls) => {
+    if (isStreamingLive) {
+      const classDets = filteredDetections.filter(
+        (d) => normalizeCanonicalClass(d.class || (d as any).class_name) === cls.key
+      );
+      const uniqueTracks = new Set(
+        classDets
+          .map((d) => parseCanonicalTrackId(d.track_id))
+          .filter((id): id is number => id != null && id > 0)
+      );
+      acc[cls.key] = {
+        detections: classDets.length,
+        tracks: uniqueTracks.size,
+      };
+    } else if (isSessionFinished) {
+      const classTracks = sessionHistoricalTracks.filter(
+        (t) => normalizeCanonicalClass(t.class || (t as any).class_name) === cls.key
+      );
+      acc[cls.key] = {
+        detections: classTracks.length,
+        tracks: classTracks.length,
+      };
+    } else {
+      acc[cls.key] = { detections: 0, tracks: 0 };
+    }
+    return acc;
+  }, {} as Record<string, { detections: number; tracks: number }>);
+
+  const totalDetectionsCount = isStreamingLive
+    ? filteredDetections.length
+    : isSessionFinished
+    ? sessionHistoricalTracks.length
+    : 0;
+
+  const activeTracksCount = isStreamingLive
+    ? new Set(
+        filteredDetections
+          .map((d) => parseCanonicalTrackId(d.track_id))
+          .filter((id): id is number => id != null && id > 0)
+      ).size
+    : isSessionFinished
+    ? sessionHistoricalTracks.length
+    : 0;
+
+  const totalThreatsCount = summarySourceItems.filter((item) => Boolean(item.threat)).length;
+
+  const highThreatsCount = summarySourceItems.filter(
+    (item) => Boolean(item.threat) && (item.threat_level === 'HIGH' || !item.threat_level)
+  ).length;
+
+  const normalTargetsCount = summarySourceItems.filter((item) => !item.threat).length;
 
   // Fullscreen Handler
   const toggleFullscreen = () => {
@@ -633,7 +768,7 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
 
       // 7. Clear active track selection & error messages
       seenTracksRef.current.clear();
-      lastKnownTracksRef.current.clear();
+      setSessionHistoricalTracks([]);
       handleSelectTrack(null);
       setFileError(null);
       addLiveEvent('VIDEO CLEARED', 'Surveillance feed reset', false);
@@ -671,7 +806,7 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
       }
       await apiService.startVideoAnalysis(videoId);
       seenTracksRef.current.clear();
-      lastKnownTracksRef.current.clear();
+      setSessionHistoricalTracks([]);
       handleSelectTrack(null);
       addLiveEvent('VIDEO STARTED', 'Thermal analysis pipeline engaged', false);
       if (videoElemRef.current) {
@@ -754,7 +889,6 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
       }
       await apiService.startVideoAnalysis(videoId);
       seenTracksRef.current.clear();
-      lastKnownTracksRef.current.clear();
       handleSelectTrack(null);
       addLiveEvent('VIDEO RESTARTED', 'Analysis restarted from beginning', false);
       if (videoElemRef.current) {
@@ -1389,141 +1523,154 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
 
         {/* RIGHT: TARGET INTELLIGENCE & TELEMETRY PANEL (28% / 4 Cols) */}
         <div className="lg:col-span-4 space-y-4 w-full max-w-full min-w-0">
-          {/* 1. Target Inspector Panel */}
-          <Card id="target-inspector-panel" className="p-4 space-y-3.5 w-full max-w-full min-w-0 bg-[#070B12] border-[var(--border-subtle)]">
+          {/* 1. Live Detection Summary Panel */}
+          <Card id="live-detection-summary-panel" className="p-4 space-y-3.5 w-full max-w-full min-w-0 bg-[#070B12] border-[var(--border-subtle)]">
             <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-2.5">
               <div className="flex items-center space-x-2 min-w-0">
-                <Crosshair className="w-4 h-4 text-[var(--thermal-cyan)] shrink-0" />
-                <h3 className="text-xs font-bold text-[var(--text-primary)] font-sans uppercase tracking-wider truncate">
-                  TARGET INSPECTOR
-                </h3>
+                <Activity className="w-4 h-4 text-[var(--thermal-cyan)] shrink-0" />
+                <div>
+                  <h3 className="text-xs font-bold text-[var(--text-primary)] font-sans uppercase tracking-wider truncate">
+                    LIVE DETECTION SUMMARY
+                  </h3>
+                  <div className="text-[10px] font-mono text-[var(--text-muted)] flex items-center gap-1.5 mt-0.5">
+                    {hasLiveOrSessionData ? (
+                      <>
+                        <span className={`w-1.5 h-1.5 rounded-full ${isStreamingLive ? 'bg-[var(--operational-green)] pulse-live' : 'bg-[var(--thermal-cyan)]'}`} />
+                        <span className={isStreamingLive ? 'text-[var(--operational-green)] font-semibold' : 'text-[var(--thermal-cyan)] font-semibold'}>
+                          REAL-TIME AI INFERENCE
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--text-muted)]" />
+                        <span>WAITING FOR THERMAL DETECTIONS</span>
+                      </>
+                    )}
+                  </div>
+                </div>
               </div>
-              {selectedTarget && (
-                <div className="flex items-center space-x-2">
-                  <Badge variant={isSelectedTargetActive ? (selectedTarget.threat ? 'red' : 'emerald') : 'amber'}>
-                    {isSelectedTargetActive ? (selectedTarget.threat ? 'THREAT' : 'NORMAL') : 'INACTIVE'}
-                  </Badge>
-                  <button
-                    onClick={() => handleSelectTrack(null)}
-                    title="Deselect Target"
-                    className="p-1 rounded-md hover:bg-white/10 text-[var(--text-muted)] hover:text-white transition-colors cursor-pointer"
+              <span className="text-[10px] font-mono text-[var(--text-muted)] uppercase tracking-wider px-2 py-0.5 rounded bg-[var(--bg-surface-secondary)] border border-[var(--border-subtle)] shrink-0">
+                YOLOv8 + ByteTrack
+              </span>
+            </div>
+
+            {/* Model Class Breakdown (Canonical 5 Classes) */}
+            <div className="space-y-1.5 font-mono text-xs">
+              <div className="flex items-center justify-between text-[10px] text-[var(--text-muted)] uppercase px-2.5 pb-0.5 border-b border-[var(--border-subtle)]/60">
+                <span>CLASS</span>
+                <div className="flex items-center space-x-6">
+                  <span title="Detections in current frame / session">DETECTIONS</span>
+                  <span title="Active ByteTrack tracks">ACTIVE TRACKS</span>
+                </div>
+              </div>
+
+              {CANONICAL_MODEL_CLASSES.map((cls) => {
+                const detCount = classCounts[cls.key]?.detections ?? 0;
+                const trkCount = classCounts[cls.key]?.tracks ?? 0;
+                const hasAny = detCount > 0 || trkCount > 0;
+                return (
+                  <div
+                    key={cls.key}
+                    id={`summary-class-${cls.key}`}
+                    className={`flex items-center justify-between px-3 py-1.5 rounded-lg border transition-all ${
+                      hasAny
+                        ? 'bg-[var(--bg-surface-secondary)] border-[var(--border-subtle)] text-[var(--text-primary)]'
+                        : 'bg-[var(--bg-surface-secondary)]/30 border-[var(--border-subtle)]/30 text-[var(--text-muted)]'
+                    }`}
                   >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                    <div className="flex items-center space-x-2">
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          hasAny
+                            ? cls.key === 'person_with_bag'
+                              ? 'bg-[var(--threat-coral)]'
+                              : 'bg-[var(--thermal-cyan)]'
+                            : 'bg-[var(--text-muted)]/30'
+                        }`}
+                      />
+                      <span className="font-sans font-semibold text-xs tracking-wide">{cls.label}</span>
+                    </div>
+                    <div className="flex items-center space-x-6">
+                      <span className={`font-bold ${detCount > 0 ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                        {detCount.toString().padStart(2, '0')}
+                      </span>
+                      <span className={`font-bold ${trkCount > 0 ? 'text-[var(--thermal-cyan)]' : 'text-[var(--text-muted)]'}`}>
+                        {trkCount.toString().padStart(2, '0')}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Totals Summary */}
+            <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-xs">
+              <div className="p-2 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex flex-col justify-between">
+                <span className="text-[10px] text-[var(--text-muted)] uppercase">TOTAL DETECTIONS</span>
+                <span className="text-base font-bold text-[var(--intelligence-violet)] mt-0.5">
+                  {totalDetectionsCount.toString().padStart(2, '0')}
+                </span>
+              </div>
+              <div className="p-2 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex flex-col justify-between">
+                <span className="text-[10px] text-[var(--text-muted)] uppercase">ACTIVE TRACKS</span>
+                <span className="text-base font-bold text-[var(--thermal-cyan)] mt-0.5">
+                  {activeTracksCount.toString().padStart(2, '0')}
+                </span>
+              </div>
+              <div className="p-2 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex flex-col justify-between">
+                <span className="text-[10px] text-[var(--text-muted)] uppercase">THREATS</span>
+                <span className={`text-base font-bold mt-0.5 ${totalThreatsCount > 0 ? 'text-[var(--threat-coral)]' : 'text-[var(--operational-green)]'}`}>
+                  {totalThreatsCount.toString().padStart(2, '0')}
+                </span>
+              </div>
+            </div>
+
+            {/* 3. Threat Status Summary */}
+            <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
+              <div className="flex items-center justify-between text-xs font-sans">
+                <span className="font-bold text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 text-[var(--threat-coral)]" />
+                  THREAT STATUS
+                </span>
+                {totalThreatsCount > 0 ? (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--threat-coral)]/15 text-[var(--threat-coral)] border border-[var(--threat-coral)]/30 font-bold">
+                    ALERT ACTIVE
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--operational-green)]/15 text-[var(--operational-green)] border border-[var(--operational-green)]/30 font-bold">
+                    ALL CLEAR
+                  </span>
+                )}
+              </div>
+
+              {totalThreatsCount === 0 ? (
+                <div className="p-2.5 bg-[var(--operational-green)]/10 border border-[var(--operational-green)]/30 rounded-xl flex items-center justify-between text-xs font-mono">
+                  <span className="text-[var(--operational-green)] font-bold tracking-wide flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-[var(--operational-green)]" />
+                    NO ACTIVE THREATS
+                  </span>
+                  <span className="text-[10px] text-[var(--text-muted)]">PERIMETER SECURE</span>
+                </div>
+              ) : (
+                <div className="space-y-1.5 font-mono text-xs">
+                  <div className="p-2 bg-[var(--threat-coral)]/10 border border-[var(--threat-coral)]/30 rounded-xl flex items-center justify-between">
+                    <span className="text-[var(--threat-coral)] font-bold flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-[var(--threat-coral)] pulse-live" />
+                      HIGH THREATS
+                    </span>
+                    <span className="text-[var(--threat-coral)] font-bold text-sm">
+                      {highThreatsCount.toString().padStart(2, '0')}
+                    </span>
+                  </div>
+                  <div className="p-2 bg-[var(--bg-surface-secondary)] border border-[var(--border-subtle)] rounded-xl flex items-center justify-between">
+                    <span className="text-[var(--text-secondary)]">NORMAL TARGETS</span>
+                    <span className="text-[var(--operational-green)] font-bold text-sm">
+                      {normalTargetsCount.toString().padStart(2, '0')}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
-
-            {selectedTarget ? (
-              <div className="space-y-2 font-sans text-xs">
-                {/* Active Status vs Track No Longer Active Banner */}
-                {isSelectedTargetActive ? (
-                  <div className="p-2 bg-[var(--operational-green)]/10 border border-[var(--operational-green)]/30 rounded-xl flex items-center justify-between text-xs">
-                    <span className="text-[var(--operational-green)] font-bold tracking-wide font-mono flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-[var(--operational-green)] pulse-live" />
-                      LIVE BYTE TRACK TARGET
-                    </span>
-                    <span className="text-[10px] text-[var(--thermal-cyan)] font-mono">STREAMING</span>
-                  </div>
-                ) : (
-                  <div className="p-2.5 bg-[var(--warning-amber)]/10 border border-[var(--warning-amber)]/30 rounded-xl flex items-center justify-between text-xs">
-                    <span className="text-[var(--warning-amber)] font-bold tracking-wide font-mono flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-[var(--warning-amber)]" />
-                      TRACK NO LONGER ACTIVE
-                    </span>
-                    <span className="text-[10px] text-[var(--text-muted)] font-mono">LAST KNOWN</span>
-                  </div>
-                )}
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)] font-mono">TARGET ID:</span>
-                  <span className="text-[var(--thermal-cyan)] font-mono font-bold text-sm">
-                    T-{parseCanonicalTrackId(selectedTarget.track_id) ?? '---'}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">CLASS:</span>
-                  <span className="text-[var(--text-primary)] font-bold uppercase">
-                    {(selectedTarget.class || (selectedTarget as any).class_name || 'TARGET').replace(/_/g, ' ')}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">CONFIDENCE:</span>
-                  <span className="text-[var(--operational-green)] font-mono font-bold">
-                    {((selectedTarget.confidence ?? 0) * 100).toFixed(1)}%
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">STATUS:</span>
-                  <span className={`font-mono font-bold uppercase ${selectedTarget.threat ? 'text-[var(--threat-coral)]' : 'text-[var(--operational-green)]'}`}>
-                    {selectedTarget.threat ? `THREAT / ${selectedTarget.threat_level || 'HIGH'}` : 'NORMAL'}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">TRACKING:</span>
-                  <span className="text-[var(--thermal-cyan)] font-mono font-semibold">
-                    ByteTrack
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">SPEED:</span>
-                  <span className="text-[var(--warning-amber)] font-mono font-bold">
-                    {selectedTarget.speed != null && selectedTarget.speed > 0 ? `${selectedTarget.speed.toFixed(1)} km/h` : 'STATIONARY'}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">ZONE:</span>
-                  <span className="text-[var(--thermal-cyan)] font-mono font-medium">
-                    {selectedTarget.zone || 'None'}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">DIRECTION:</span>
-                  <span className="text-[var(--text-primary)] font-mono font-medium">
-                    {selectedTarget.direction || 'STATIONARY'}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">
-                    {isSelectedTargetActive ? 'POSITION:' : 'LAST KNOWN POSITION:'}
-                  </span>
-                  <span className="text-[var(--text-secondary)] font-mono text-right truncate max-w-[200px]">
-                    {selectedTarget.bbox && Array.isArray(selectedTarget.bbox) && selectedTarget.bbox.length === 4
-                      ? `X: ${(((selectedTarget.bbox[0] + selectedTarget.bbox[2]) / 2)).toFixed(2)}, Y: ${(((selectedTarget.bbox[1] + selectedTarget.bbox[3]) / 2)).toFixed(2)}`
-                      : (selectedTarget as any).last_position
-                      ? `X: ${((selectedTarget as any).last_position.x).toFixed(2)}, Y: ${((selectedTarget as any).last_position.y).toFixed(2)}`
-                      : 'N/A'}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">THREAT REASON:</span>
-                  <span className="text-[var(--text-primary)] font-medium text-right truncate max-w-[180px]" title={selectedTarget.threat_reason || (selectedTarget.threat ? 'Threat detected' : 'None')}>
-                    {selectedTarget.threat_reason || (selectedTarget.threat ? 'Threat detected' : 'None')}
-                  </span>
-                </div>
-
-                <div className="p-2.5 bg-[var(--bg-surface-secondary)] rounded-xl border border-[var(--border-subtle)] flex justify-between items-center">
-                  <span className="text-[var(--text-muted)]">LAST SEEN:</span>
-                  <span className="text-[var(--text-secondary)] font-mono">
-                    {selectedTarget.timestamp ? (selectedTarget.timestamp.includes('T') ? formatIST(new Date(selectedTarget.timestamp), { includeTimeOnly: true }) : selectedTarget.timestamp) : 'LIVE'}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-8 px-4 border border-dashed border-[var(--border-subtle)] rounded-xl space-y-1.5">
-                <div className="text-xs font-mono font-bold text-[var(--text-secondary)]">SELECT A TARGET TO INSPECT</div>
-                <div className="text-[11px] text-[var(--text-muted)]">Choose an active tracked object to view details.</div>
-              </div>
-            )}
           </Card>
 
           {/* 2. Active Targets Buffer */}
@@ -1589,6 +1736,76 @@ export const LiveSurveillance: React.FC<LiveSurveillanceProps> = ({
               )}
             </div>
           </Card>
+
+          {/* 2b. Session Historical Targets */}
+          {(videoStatus.status === 'completed' || videoStatus.status === 'stopped' || sessionHistoricalTracks.length > 0) && (
+            <Card id="session-targets-panel" className="p-4 space-y-2.5 w-full max-w-full min-w-0 bg-[#070B12] border-[var(--border-subtle)]">
+              <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-2 text-xs font-sans">
+                <span className="font-bold text-[var(--text-primary)] uppercase tracking-wider flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-[var(--warning-amber)]" />
+                  SESSION TARGETS ({sessionHistoricalTracks.length})
+                </span>
+                <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                  {videoStatus.status === 'completed' ? 'COMPLETED SESSION' : 'HISTORICAL TRACKS'}
+                </span>
+              </div>
+
+              <div data-lenis-prevent className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {sessionHistoricalTracks.length === 0 ? (
+                  <div className="text-center py-6 px-4 border border-dashed border-[var(--border-subtle)] rounded-xl space-y-1">
+                    <div className="text-xs font-mono font-bold text-[var(--text-secondary)]">NO SESSION TARGETS</div>
+                    <div className="text-[11px] text-[var(--text-muted)]">No historical tracks recorded for this session.</div>
+                  </div>
+                ) : (
+                  sessionHistoricalTracks.map((trk) => {
+                    const cTid = parseCanonicalTrackId(trk.track_id);
+                    const isSelected = currentCanonicalTrackId != null && cTid === currentCanonicalTrackId;
+                    const displayClass = (trk.class || (trk as any).class_name || 'TARGET').replace(/_/g, ' ');
+                    const conf = trk.confidence ?? (trk as any).average_confidence ?? 0;
+                    return (
+                      <div
+                        key={`session-track-${cTid ?? trk.track_id}`}
+                        id={`session-target-${cTid}`}
+                        onClick={() => handleSelectTrack(cTid ?? trk.track_id)}
+                        onPointerDown={() => handleSelectTrack(cTid ?? trk.track_id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleSelectTrack(cTid ?? trk.track_id);
+                          }
+                        }}
+                        className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between text-xs font-sans ${
+                          isSelected
+                            ? 'bg-[var(--thermal-cyan)]/15 border-[var(--thermal-cyan)]/60 text-[var(--text-primary)] shadow-[0_0_12px_rgba(85,217,245,0.2)]'
+                            : 'bg-[var(--bg-surface-secondary)] border-[var(--border-subtle)] hover:border-[var(--border-hover)] text-[var(--text-secondary)]'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-2.5 min-w-0">
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${trk.threat ? 'bg-[var(--threat-coral)]' : 'bg-[var(--operational-green)]'}`} />
+                          <span className="font-mono font-bold text-[var(--thermal-cyan)] shrink-0">T-{cTid}</span>
+                          <span className="truncate font-semibold text-[var(--text-primary)] uppercase">{displayClass}</span>
+                        </div>
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                            trk.threat
+                              ? 'bg-[var(--threat-coral)]/15 text-[var(--threat-coral)] border border-[var(--threat-coral)]/30'
+                              : 'bg-[var(--operational-green)]/15 text-[var(--operational-green)] border border-[var(--operational-green)]/30'
+                          }`}>
+                            {trk.threat ? `THREAT · ${trk.threat_level || 'HIGH'}` : 'NORMAL'}
+                          </span>
+                          <span className="text-[10px] font-mono text-[var(--text-muted)]">
+                            {(conf * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </Card>
+          )}
 
           {/* 3. Live Activity Stream */}
           <Card className="p-4 space-y-3 w-full max-w-full min-w-0 bg-[#070B12] border-[var(--border-subtle)]">

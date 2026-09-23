@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",
+        "https://ai-multisense.vercel.app",
     ]
     DEFAULT_SPEED_THRESHOLD_KMH: float = 80.0
     DEFAULT_CONFIDENCE_THRESHOLD: float = 0.5
@@ -21,7 +22,12 @@ class Settings(BaseSettings):
 
     @classmethod
     def parse_cors_origins(cls, v) -> List[str]:
-        defaults = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]
+        defaults = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "https://ai-multisense.vercel.app",
+        ]
         if not v:
             return defaults
         if isinstance(v, list):

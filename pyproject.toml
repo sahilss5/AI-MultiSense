@@ -1,3 +1,8 @@
+[project]
+name = "ai-multisense"
+version = "1.0.0"
+requires-python = ">=3.11, <3.12"
+
 [tool.pyright]
 include = ["backend", "ai", "tests"]
 executionEnvironments = [

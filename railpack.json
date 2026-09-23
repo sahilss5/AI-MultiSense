@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "packages": {
+    "python": "3.11.9"
+  },
+  "deploy": {
+    "aptPackages": [
+      "libxcb1",
+      "libgl1",
+      "libglib2.0-0"
+    ]
+  }
+}

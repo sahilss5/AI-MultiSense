@@ -476,17 +476,4 @@ The system has undergone thorough automated testing across both backend and fron
 
 ---
 
-## 23. Viva / Presentation Quick Reference
 
-| Technology / Component | Why We Use It |
-| :--- | :--- |
-| **YOLO11n** | High-speed, lightweight deep learning object detector optimized for real-time thermal edge inference. |
-| **ByteTrack** | Associates detections across consecutive frames to maintain persistent Track IDs and enable trajectory monitoring. |
-| **OpenCV** | Provides reliable frame extraction, image decoding, and video stream pacing. |
-| **FastAPI** | Asynchronous, high-performance Python web framework with native WebSocket support and automatic Swagger OpenAPI documentation. |
-| **WebSocket (`/ws/live`)** | Delivers low-latency, push-based detection updates to the dashboard without polling overhead. |
-| **SQLite + SQLModel** | Lightweight, file-based database for persistence of alerts, geofence zones, and system settings. |
-| **React 18 + Vite** | Component-driven, responsive user interface with rapid development compilation and optimized production builds. |
-| **TypeScript** | Static typing across all frontend models to eliminate runtime schema mismatch bugs. |
-| **Threat Engine** | Decouples security assessment logic from computer vision perception, allowing customizable rules. |
-| **Ray-Casting Algorithm** | Mathematically determines whether an object's centroid falls inside an arbitrary user-drawn polygon geofence. |
